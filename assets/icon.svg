@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- MieryCommander icon: a floppy disk with two "panels" on its label. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a4f57"/>
+      <stop offset="1" stop-color="#33373d"/>
+    </linearGradient>
+    <linearGradient id="shutter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6cb8f6"/>
+      <stop offset="1" stop-color="#3f95e0"/>
+    </linearGradient>
+  </defs>
+  <!-- body with the typical cut corner -->
+  <path d="M84 52 H380 L460 132 V428 A32 32 0 0 1 428 460 H84 A32 32 0 0 1 52 428 V84 A32 32 0 0 1 84 52 Z" fill="url(#body)"/>
+  <!-- metal shutter -->
+  <rect x="140" y="52" width="216" height="128" rx="10" fill="url(#shutter)"/>
+  <rect x="286" y="78" width="40" height="76" rx="8" fill="#1f2a36" opacity="0.85"/>
+  <!-- label -->
+  <rect x="104" y="262" width="304" height="198" rx="18" fill="#eef2f6"/>
+  <!-- two panels on the label, like the two file panels of the app -->
+  <rect x="130" y="290" width="118" height="140" rx="8" fill="#3f95e0"/>
+  <rect x="264" y="290" width="118" height="140" rx="8" fill="#9aa5b1"/>
+  <g fill="#eef2f6">
+    <rect x="146" y="310" width="86" height="12" rx="6"/>
+    <rect x="146" y="336" width="66" height="12" rx="6"/>
+    <rect x="146" y="362" width="78" height="12" rx="6"/>
+    <rect x="280" y="310" width="86" height="12" rx="6"/>
+    <rect x="280" y="336" width="58" height="12" rx="6"/>
+    <rect x="280" y="362" width="74" height="12" rx="6"/>
+  </g>
+</svg>

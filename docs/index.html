@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MieryCommander</title>
+<meta name="description" content="MieryCommander – ein zweispaltiger Dateimanager im Stil von Total Commander, geschrieben in Rust, für Linux und macOS.">
+<link rel="icon" type="image/png" href="img/favicon.png">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --bg-alt: #ffffff;
+    --text: #1d2229;
+    --muted: #5b6573;
+    --border: #dde2e8;
+    --accent: #2f7fd1;
+    --accent-text: #ffffff;
+    --code-bg: #eef1f5;
+    --shadow: 0 10px 30px rgba(20, 30, 50, 0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181c;
+      --bg-alt: #1d2126;
+      --text: #e7eaee;
+      --muted: #9aa5b1;
+      --border: #2c3239;
+      --accent: #5aa9f0;
+      --accent-text: #0d1a26;
+      --code-bg: #232830;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181c;
+    --bg-alt: #1d2126;
+    --text: #e7eaee;
+    --muted: #9aa5b1;
+    --border: #2c3239;
+    --accent: #5aa9f0;
+    --accent-text: #0d1a26;
+    --code-bg: #232830;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Ubuntu, "Noto Sans", sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  header.top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; text-decoration: none; color: var(--text); }
+  .brand img { width: 28px; height: 28px; }
+  nav.links { display: flex; gap: 18px; margin-left: auto; }
+  nav.links a { color: var(--muted); text-decoration: none; font-size: 15px; }
+  nav.links a:hover { color: var(--text); }
+  .lang { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .lang button {
+    border: 0; background: transparent; color: var(--muted); padding: 4px 10px; cursor: pointer; font: inherit; font-size: 14px;
+  }
+  .lang button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+  .hero { padding: 64px 0 32px; text-align: center; }
+  .hero img.logo { width: 112px; height: 112px; }
+  .hero h1 { font-size: clamp(32px, 6vw, 52px); margin: 12px 0 8px; letter-spacing: -0.5px; }
+  .hero p.tag { font-size: clamp(17px, 2.4vw, 21px); color: var(--muted); max-width: 720px; margin: 0 auto 28px; }
+  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 10px;
+    font-weight: 600; text-decoration: none; border: 1px solid var(--border); color: var(--text); background: var(--bg-alt);
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .badges { margin-top: 18px; color: var(--muted); font-size: 14px; }
+  .shot { margin: 40px auto 0; max-width: 1100px; }
+  .shot img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); box-shadow: var(--shadow); display: block; }
+  section { padding: 56px 0; }
+  section h2 { font-size: clamp(24px, 4vw, 32px); margin: 0 0 8px; }
+  section p.lead { color: var(--muted); margin: 0 0 28px; max-width: 760px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+  .card { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 12px; padding: 18px 18px 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; display: flex; gap: 8px; align-items: center; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 20px; }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--border); display: block; cursor: zoom-in; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    overflow-x: auto; font: 14px/1.5 ui-monospace, "Cascadia Code", "Ubuntu Mono", monospace; margin: 8px 0 18px;
+  }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
+  table.keys { width: 100%; border-collapse: collapse; font-size: 15px; }
+  table.keys td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.keys td:first-child { white-space: nowrap; width: 1%; }
+  kbd {
+    font: 13px ui-monospace, monospace; background: var(--code-bg); border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px;
+  }
+  footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+  .lightbox {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.82); display: none; align-items: center; justify-content: center;
+    padding: 16px; z-index: 50; cursor: zoom-out;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  [data-lang-show] { display: none; }
+  html[lang="de"] [data-lang-show="de"], html[lang="en"] [data-lang-show="en"] { display: revert; }
+  @media (max-width: 720px) {
+    nav.links { display: none; }
+    .lang { margin-left: auto; }
+    .hero { padding-top: 40px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="img/icon.svg" alt="">MieryCommander</a>
+    <nav class="links">
+      <a href="#features" data-i18n="nav_features">Funktionen</a>
+      <a href="#screenshots" data-i18n="nav_shots">Screenshots</a>
+      <a href="#install" data-i18n="nav_install">Installation</a>
+      <a href="#keys" data-i18n="nav_keys">Tastenkürzel</a>
+      <a href="https://github.com/Evil8810/MieryCommander">GitHub</a>
+    </nav>
+    <div class="lang" role="group" aria-label="Sprache / Language">
+      <button type="button" data-set-lang="de" aria-pressed="true">DE</button>
+      <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <img class="logo" src="img/icon.svg" alt="MieryCommander Logo">
+    <h1>MieryCommander</h1>
+    <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager im Stil von Total Commander – geschrieben in Rust, für Linux und macOS.</p>
+    <div class="buttons">
+      <a class="btn primary" href="#install" data-i18n="cta_install">Installieren</a>
+      <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
+    </div>
+    <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux &amp; macOS · Rust + egui</div>
+    <div class="shot"><img src="img/main.png" alt="MieryCommander Hauptfenster" width="1280" height="760"></div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2 data-i18n="features_title">Funktionen</h2>
+      <p class="lead" data-i18n="features_lead">Alles, was man von einem Commander erwartet – mit der Tastatur genauso bedienbar wie mit der Maus.</p>
+      <div class="grid">
+        <div class="card"><h3>🗂️ <span data-i18n="f1_t">Zwei Panels &amp; Tabs</span></h3><p data-i18n="f1">F-Tasten-Leiste, Tabs, Laufwerksleiste, Schnellsuche durch Lostippen, Schnellfilter, Favoriten und Verlauf.</p></div>
+        <div class="card"><h3>📦 <span data-i18n="f2_t">Archive wie Ordner</span></h3><p data-i18n="f2">ZIP, 7z, RAR, TAR (gz/bz2/xz/zst) öffnen, ansehen, herauskopieren – Packen in 7 Formaten, „Smart entpacken“ mit eigenem Ordner.</p></div>
+        <div class="card"><h3>🌐 <span data-i18n="f3_t">Netzwerk</span></h3><p data-i18n="f3">Eingebauter SFTP-, FTP- und FTPS-Client, SMB-Freigaben, Netzlaufwerke in der Laufwerksleiste, Passwörter im System-Schlüsselbund.</p></div>
+        <div class="card"><h3>🔃 <span data-i18n="f4_t">Synchronisieren</span></h3><p data-i18n="f4">Verzeichnisse nach Datum oder Inhalt abgleichen, Aktion pro Datei wählen, Spiegel-Modus, leere Ordner inklusive.</p></div>
+        <div class="card"><h3>⚖️ <span data-i18n="f5_t">Dateien vergleichen</span></h3><p data-i18n="f5">Zwei Dateien nebeneinander mit farbigen Unterschieden bis in die Zeile hinein; Binärdateien byteweise.</p></div>
+        <div class="card"><h3>✏️ <span data-i18n="f6_t">Mehrfach-Umbenennen</span></h3><p data-i18n="f6">Masken wie [N], [C], [Y][M][D], Suchen &amp; Ersetzen mit regulären Ausdrücken und Live-Vorschau.</p></div>
+        <div class="card"><h3>📋 <span data-i18n="f7_t">Zwischenablage</span></h3><p data-i18n="f7">Strg+C / X / V für Dateien – auch mit Dolphin, Nautilus &amp; Co. und zwischen Servern und Archiven.</p></div>
+        <div class="card"><h3>🔍 <span data-i18n="f8_t">Suchen &amp; Ansehen</span></h3><p data-i18n="f8">Dateisuche mit Wildcards, RegEx und Textinhalt; Lister für Text, Hex und Bilder, Schnellansicht, Branch-View.</p></div>
+        <div class="card"><h3>⚡ <span data-i18n="f9_t">Bleibt bedienbar</span></h3><p data-i18n="f9">Alles läuft im Hintergrund mit Fortschritt – ein hängendes Netzlaufwerk friert die Oberfläche nicht ein.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2 data-i18n="shots_title">Screenshots</h2>
+      <p class="lead" data-i18n="shots_lead">Zum Vergrößern anklicken.</p>
+      <div class="gallery">
+        <figure><img src="img/context-menu.png" alt="" loading="lazy"><figcaption data-i18n="s1">Kontextmenü mit allen Dateiaktionen</figcaption></figure>
+        <figure><img src="img/compare.png" alt="" loading="lazy"><figcaption data-i18n="s2">Dateien vergleichen</figcaption></figure>
+        <figure><img src="img/sync.png" alt="" loading="lazy"><figcaption data-i18n="s3">Verzeichnisse synchronisieren</figcaption></figure>
+        <figure><img src="img/archive.png" alt="" loading="lazy"><figcaption data-i18n="s4">Ein ZIP-Archiv wie einen Ordner öffnen</figcaption></figure>
+        <figure><img src="img/connect.png" alt="" loading="lazy"><figcaption data-i18n="s5">Verbindung zu einem SFTP-Server</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2 data-i18n="install_title">Installation</h2>
+      <p class="lead" data-i18n="install_lead">MieryCommander wird aus dem Quellcode gebaut. Du brauchst Rust (z. B. über rustup.rs oder Homebrew) und Git.</p>
+      <div class="cols">
+        <div>
+          <h3>Linux</h3>
+          <pre>git clone https://github.com/Evil8810/MieryCommander.git
+cd MieryCommander
+cargo run --release</pre>
+          <p data-i18n="install_menu">Ins Startmenü eintragen (mit Icon, ohne sudo):</p>
+          <pre>./install-desktop.sh</pre>
+        </div>
+        <div>
+          <h3>macOS</h3>
+          <pre>brew install rust
+git clone https://github.com/Evil8810/MieryCommander.git
+cd MieryCommander
+cargo run --release</pre>
+          <p data-i18n="install_mac">Auf Mac-Tastaturen die F-Tasten mit fn drücken oder die Leiste unten benutzen; Strg-Kürzel sind dort Cmd-Kürzel.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="keys">
+    <div class="wrap">
+      <h2 data-i18n="keys_title">Wichtige Tastenkürzel</h2>
+      <div class="cols">
+        <table class="keys">
+          <tr><td><kbd>Tab</kbd></td><td data-i18n="k1">Panel wechseln</td></tr>
+          <tr><td><kbd>F3</kbd> / <kbd>F4</kbd></td><td data-i18n="k2">Ansehen / Bearbeiten</td></tr>
+          <tr><td><kbd>F5</kbd> / <kbd>F6</kbd></td><td data-i18n="k3">Kopieren / Verschieben</td></tr>
+          <tr><td><kbd>F7</kbd> / <kbd>F8</kbd></td><td data-i18n="k4">Neuer Ordner / Löschen</td></tr>
+          <tr><td><kbd>Einfg</kbd> <kbd>Leertaste</kbd></td><td data-i18n="k5">Markieren</td></tr>
+          <tr><td><kbd>Strg</kbd>+<kbd>C</kbd>/<kbd>X</kbd>/<kbd>V</kbd></td><td data-i18n="k6">Kopieren / Ausschneiden / Einfügen</td></tr>
+        </table>
+        <table class="keys">
+          <tr><td><kbd>Alt</kbd>+<kbd>F5</kbd> / <kbd>Alt</kbd>+<kbd>F9</kbd></td><td data-i18n="k7">Packen / Entpacken</td></tr>
+          <tr><td><kbd>Alt</kbd>+<kbd>F7</kbd></td><td data-i18n="k8">Dateien suchen</td></tr>
+          <tr><td><kbd>Strg</kbd>+<kbd>F</kbd></td><td data-i18n="k9">Mit Server verbinden (SFTP/FTP/SMB)</td></tr>
+          <tr><td><kbd>Strg</kbd>+<kbd>M</kbd></td><td data-i18n="k10">Mehrfach-Umbenennen</td></tr>
+          <tr><td><kbd>Strg</kbd>+<kbd>T</kbd> / <kbd>Strg</kbd>+<kbd>W</kbd></td><td data-i18n="k11">Neuer Tab / Tab schließen</td></tr>
+          <tr><td><kbd>Strg</kbd>+<kbd>G</kbd></td><td data-i18n="k12">Gleicher Ordner wie im anderen Panel</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span data-i18n="footer_license">MieryCommander ist Open Source unter der MIT-Lizenz.</span>
+    <span data-i18n="footer_tc">Nicht verbunden mit Total Commander oder Ghisler Software.</span>
+  </div>
+</footer>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true"><img alt=""></div>
+
+<script>
+const T = {
+  en: {
+    nav_features: "Features", nav_shots: "Screenshots", nav_install: "Install", nav_keys: "Shortcuts",
+    tagline: "A fast, dual-pane file manager in the style of Total Commander – written in Rust, for Linux and macOS.",
+    cta_install: "Install", cta_github: "Source code on GitHub",
+    badges: "Open source · MIT license · Linux & macOS · Rust + egui",
+    features_title: "Features",
+    features_lead: "Everything you expect from a commander – just as usable with the keyboard as with the mouse.",
+    f1_t: "Two panels & tabs", f1: "Function key bar, tabs, drive bar, type-to-search, quick filter, favourites and history.",
+    f2_t: "Archives as folders", f2: "Open, view and copy out of ZIP, 7z, RAR, TAR (gz/bz2/xz/zst) – pack into 7 formats, “smart extract” into its own folder.",
+    f3_t: "Network", f3: "Built-in SFTP, FTP and FTPS client, SMB shares, network drives in the drive bar, passwords in the system keyring.",
+    f4_t: "Synchronize", f4: "Sync directories by date or content, choose the action per file, mirror mode, empty folders included.",
+    f5_t: "Compare files", f5: "Two files side by side with coloured differences down to the changed words; binary files byte by byte.",
+    f6_t: "Multi-rename", f6: "Masks like [N], [C], [Y][M][D], search & replace with regular expressions and live preview.",
+    f7_t: "Clipboard", f7: "Ctrl+C / X / V for files – also with Dolphin, Nautilus & co., between servers and archives.",
+    f8_t: "Search & view", f8: "File search with wildcards, regex and text content; lister for text, hex and images, quick view, branch view.",
+    f9_t: "Always responsive", f9: "Everything runs in the background with progress – a hanging network drive never freezes the window.",
+    shots_title: "Screenshots", shots_lead: "Click to enlarge.",
+    s1: "Context menu with all file actions", s2: "Comparing two files", s3: "Synchronizing directories",
+    s4: "Opening a ZIP archive like a folder", s5: "Connecting to an SFTP server",
+    install_title: "Installation",
+    install_lead: "MieryCommander is built from source. You need Rust (e.g. via rustup.rs or Homebrew) and Git.",
+    install_menu: "Add it to the start menu (with icon, no sudo):",
+    install_mac: "On Mac keyboards press the F keys with fn or use the bar at the bottom; Ctrl shortcuts are Cmd shortcuts there.",
+    keys_title: "Important shortcuts",
+    k1: "Switch panel", k2: "View / Edit", k3: "Copy / Move", k4: "New folder / Delete", k5: "Select",
+    k6: "Copy / Cut / Paste", k7: "Pack / Unpack", k8: "Find files", k9: "Connect to a server (SFTP/FTP/SMB)",
+    k10: "Multi-rename", k11: "New tab / Close tab", k12: "Same folder as the other panel",
+    footer_license: "MieryCommander is open source under the MIT license.",
+    footer_tc: "Not affiliated with Total Commander or Ghisler Software."
+  }
+};
+// Remember the German originals so switching back works without a reload.
+const DE = {};
+document.querySelectorAll("[data-i18n]").forEach(el => { DE[el.dataset.i18n] = el.innerHTML; });
+
+function setLang(lang) {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.dataset.i18n;
+    el.innerHTML = lang === "en" ? (T.en[key] ?? DE[key]) : DE[key];
+  });
+  document.querySelectorAll("[data-set-lang]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.setLang === lang)));
+  document.title = "MieryCommander";
+  try { localStorage.setItem("lang", lang); } catch (e) {}
+}
+let initial = "de";
+try { initial = localStorage.getItem("lang") || (navigator.language.startsWith("de") ? "de" : "en"); } catch (e) {}
+setLang(initial);
+document.querySelectorAll("[data-set-lang]").forEach(b => b.addEventListener("click", () => setLang(b.dataset.setLang)));
+
+// Lightbox for screenshots.
+const box = document.getElementById("lightbox");
+document.querySelectorAll("figure img, .shot img").forEach(img => img.addEventListener("click", () => {
+  box.querySelector("img").src = img.src;
+  box.classList.add("open");
+}));
+box.addEventListener("click", () => box.classList.remove("open"));
+document.addEventListener("keydown", e => { if (e.key === "Escape") box.classList.remove("open"); });
+</script>
+</body>
+</html>
