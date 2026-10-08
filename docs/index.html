@@ -147,6 +147,7 @@
     <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager – geschrieben in Rust, für Linux und macOS.</p>
     <div class="buttons">
       <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_mac">⬇ Download für macOS</a>
+      <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_linux">⬇ Download für Linux</a>
       <a class="btn" href="#install" data-i18n="cta_install">Installieren</a>
       <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
     </div>
@@ -190,10 +191,14 @@
   <section id="install">
     <div class="wrap">
       <h2 data-i18n="install_title">Installation</h2>
-      <p class="lead" data-i18n="install_lead">Unter Linux wird MieryCommander aus dem Quellcode gebaut (Rust + Git). Für macOS gibt es eine fertige App.</p>
+      <p class="lead" data-i18n="install_lead">Fertige Downloads für Linux (AppImage) und macOS (.dmg) – oder selbst aus dem Quellcode bauen.</p>
       <div class="cols">
         <div>
           <h3>Linux</h3>
+          <p data-i18n="install_linux_appimage"><a href="https://github.com/Evil8810/MieryCommander/releases/latest">.AppImage herunterladen</a>, ausführbar machen (Rechtsklick → Eigenschaften → „Ausführbar“) und starten. Mit <b>Gear Lever</b> (z. B. auf Bazzite) landet sie samt Icon im Startmenü.</p>
+          <pre>chmod +x MieryCommander-*.AppImage
+./MieryCommander-*.AppImage</pre>
+          <p data-i18n="install_linux_tar">Oder das <b>.tar.gz</b> entpacken und <code>./install-desktop.sh</code> ausführen – installiert nach <code>~/.local</code> und ins Startmenü, ohne sudo. Selbst bauen:</p>
           <pre>git clone https://github.com/Evil8810/MieryCommander.git
 cd MieryCommander
 cargo run --release</pre>
@@ -269,9 +274,12 @@ const T = {
     s1: "Context menu with all file actions", s2: "Comparing two files", s3: "Synchronizing directories",
     s4: "Opening a ZIP archive like a folder", s5: "Connecting to an SFTP server",
     install_title: "Installation",
-    install_lead: "On Linux MieryCommander is built from source (Rust + Git). For macOS there is a ready-made app.",
+    install_lead: "Ready-made downloads for Linux (AppImage) and macOS (.dmg) – or build it from source with Rust.",
     install_menu: "Add it to the start menu (with icon, no sudo):",
     cta_mac: "⬇ Download for macOS",
+    cta_linux: "⬇ Download for Linux",
+    install_linux_appimage: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .AppImage</a>, make it executable (right-click → Properties → “Executable”) and start it. With <b>Gear Lever</b> (e.g. on Bazzite) it lands in the start menu with its icon.",
+    install_linux_tar: "Or unpack the <b>.tar.gz</b> and run <code>./install-desktop.sh</code> – installs into <code>~/.local</code> and the start menu, no sudo. Build it yourself:",
     install_mac_dmg: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .dmg</a> (Intel &amp; Apple Silicon), open it and drag MieryCommander into “Applications”. On first launch: <b>right-click → Open</b> – the app is not notarized by Apple.",
     install_mac_src: "Or build and install it yourself (installs Rust via Homebrew if needed):",
     install_mac: "On Mac keyboards press the F keys with fn or use the bar at the bottom; Ctrl shortcuts are Cmd shortcuts there.",

@@ -5,12 +5,19 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-bin="$here/target/release/miery_commander"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 
-if [ ! -x "$bin" ]; then
-    echo "Programm noch nicht gebaut – baue jetzt: cargo build --release"
-    (cd "$here" && cargo build --release)
+if [ -x "$here/miery_commander" ]; then
+    # Downloaded package (tar.gz): put the program into ~/.local/bin.
+    mkdir -p "$HOME/.local/bin"
+    install -m 755 "$here/miery_commander" "$HOME/.local/bin/miery_commander"
+    bin="$HOME/.local/bin/miery_commander"
+else
+    bin="$here/target/release/miery_commander"
+    if [ ! -x "$bin" ]; then
+        echo "Programm noch nicht gebaut – baue jetzt: cargo build --release"
+        (cd "$here" && cargo build --release)
+    fi
 fi
 
 # Icon in several sizes (the app id "miery-commander" must match the .desktop name).

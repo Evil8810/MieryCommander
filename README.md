@@ -7,6 +7,16 @@ Zweispaltiger Dateimanager – geschrieben in Rust mit
 
 ![MieryCommander](docs/img/main.png)
 
+## Download
+
+Fertige Pakete gibt es unter [Releases](https://github.com/Evil8810/MieryCommander/releases/latest):
+
+- **Linux:** `MieryCommander-…-x86_64.AppImage` – ausführbar machen (`chmod +x`) und starten; mit Gear Lever
+  ins Startmenü. Oder das `.tar.gz` entpacken und `./install-desktop.sh` ausführen (installiert nach `~/.local`).
+- **macOS:** `MieryCommander-…-macos-universal.dmg` (Intel & Apple Silicon) – beim ersten Start Rechtsklick → Öffnen.
+
+Linux-Pakete selbst bauen: `./package-linux.sh` (landet in `target/linux`).
+
 ## Bauen & Starten
 
 Voraussetzung: Rust (z. B. `brew install rust` oder <https://rustup.rs>).
