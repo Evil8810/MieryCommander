@@ -732,6 +732,27 @@ fn connect_dialog_keeps_full_size() {
     form(&mut h).site.protocol = Protocol::Smb;
     steps(&mut h, 3);
     assert_buttons_visible(&mut h, "after switching to SMB");
+
+    // Search results: servers and shares appear as clickable choices.
+    let f = form(&mut h);
+    f.found_hosts = vec![("TrueNAS".into(), "truenas.local".into()), ("Büro".into(), "buero.local".into())];
+    f.found_shares = vec!["Media".into(), "backup".into()];
+    steps(&mut h, 3);
+    if let Ok(out) = std::env::var("MIERY_SMB_SHOT") {
+        h.render().unwrap().save(out).unwrap();
+    }
+    assert_buttons_visible(&mut h, "with SMB search results");
+    h.get_by_label("📁 Media").click();
+    steps(&mut h, 2);
+    assert_eq!(form(&mut h).site.remote_dir, "Media");
+    h.get_by_label("🖧 TrueNAS").click();
+    steps(&mut h, 2);
+    let f = form(&mut h);
+    assert_eq!((f.site.host.as_str(), f.site.name.as_str(), f.site.remote_dir.as_str()), ("truenas.local", "TrueNAS", ""));
+    assert!(f.lookup.is_some(), "choosing a server lists its shares");
+    f.lookup = None;
+    f.found_hosts.clear();
+    f.found_shares.clear();
     form(&mut h).site.protocol = Protocol::Ftp;
     steps(&mut h, 3);
     assert_buttons_visible(&mut h, "back to FTP");

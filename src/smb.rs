@@ -89,13 +89,244 @@ pub fn mount(host: &str, share: &str, user: &str, password: &str) -> Result<Path
     }
     #[cfg(target_os = "macos")]
     {
-        mac_mount(&url(host, share, user), share, user, password)
+        let attempt = |host: &str| {
+            if password.is_empty() && is_guest(user) {
+                // Guest share: log in as guest directly – otherwise Finder
+                // insists on asking for a user name and password.
+                mac_mount(&guest_url(host, share), share, "", "").or_else(|_| mac_mount(&url(host, share, ""), share, "", ""))
+            } else {
+                mac_mount(&url(host, share, user), share, user, password)
+            }
+        };
+        attempt(host).or_else(|err| {
+            // "nas" alone often isn't found on a Mac, "nas.local" (Bonjour) is.
+            let h = host.trim().trim_start_matches("smb://").trim_end_matches('/');
+            if h.contains('.') || h.contains(':') { Err(err) } else { attempt(&format!("{h}.local")).map_err(|_| err) }
+        })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = url;
         Err(l!("SMB wird auf diesem System nicht unterstützt", "SMB is not supported on this system").into())
     }
+}
+
+/// No user (or "guest"/"Gast"): log in as guest.
+pub fn is_guest(user: &str) -> bool {
+    let u = user.trim().to_lowercase();
+    u.is_empty() || u == "guest" || u == "gast" || u == "anonymous"
+}
+
+/// "smb://guest:@host/share" – the guest login Finder accepts without asking.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn guest_url(host: &str, share: &str) -> String {
+    url(host, share, "guest").replacen("guest@", "guest:@", 1)
+}
+
+/// Run a program for at most `limit` and return what it printed so far
+/// (browsing tools like `dns-sd -B` never end on their own).
+fn output_within(cmd: &mut std::process::Command, limit: std::time::Duration) -> Result<String, String> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
+    let mut stderr = child.stderr.take().ok_or("stderr")?;
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+    let end = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
+            break Some(st);
+        }
+        if std::time::Instant::now() >= end {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let out = reader.join().unwrap_or_default();
+    let err = err_reader.join().unwrap_or_default();
+    match status {
+        Some(st) if !st.success() && out.trim().is_empty() => Err(if err.trim().is_empty() { st.to_string() } else { err.trim().to_string() }),
+        _ => Ok(out),
+    }
+}
+
+/// SMB servers announced in the local network (Bonjour/Avahi), as
+/// (name, host). Takes a few seconds; call off the UI thread.
+pub fn discover() -> Result<Vec<(String, String)>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::time::Duration;
+        let browse = output_within(std::process::Command::new("dns-sd").args(["-B", "_smb._tcp", "local."]), Duration::from_secs(3))?;
+        let names = parse_dns_sd_browse(&browse);
+        // Resolve the names to host names in parallel ("TrueNAS" → "truenas.local").
+        let handles: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                std::thread::spawn(move || {
+                    let out = output_within(std::process::Command::new("dns-sd").args(["-L", name.as_str(), "_smb._tcp", "local."]), Duration::from_secs(2)).unwrap_or_default();
+                    let host = parse_dns_sd_resolve(&out).unwrap_or_else(|| format!("{}.local", name.replace(' ', "-")));
+                    (name, host)
+                })
+            })
+            .collect();
+        let mut found: Vec<(String, String)> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+        found.sort();
+        found.dedup_by(|a, b| a.1 == b.1);
+        Ok(found)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let out = output_within(std::process::Command::new("avahi-browse").args(["-tpr", "_smb._tcp"]), std::time::Duration::from_secs(5))
+            .map_err(|e| lf!("Netzwerksuche nicht möglich (avahi-browse): {e}", "Network search not possible (avahi-browse): {e}"))?;
+        Ok(parse_avahi(&out))
+    }
+}
+
+/// `dns-sd -B` lines: "12:00:00.000  Add  3  4 local.  _smb._tcp.  TrueNAS" → instance names.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_dns_sd_browse(out: &str) -> Vec<String> {
+    let mut names: Vec<String> = out
+        .lines()
+        .filter_map(|line| {
+            let t: Vec<&str> = line.split_whitespace().collect();
+            (t.len() > 6 && t[1] == "Add").then(|| t[6..].join(" "))
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// `dns-sd -L`: "… can be reached at truenas.local.:445 (interface 4)" → "truenas.local".
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_dns_sd_resolve(out: &str) -> Option<String> {
+    let rest = out.split("can be reached at ").nth(1)?;
+    let host = rest.split(|c: char| c == ':' || c.is_whitespace()).next()?.trim_end_matches('.');
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// `avahi-browse -tpr` lines: "=;eth0;IPv4;TrueNAS;_smb._tcp;local;truenas.local;192.168.1.5;445;…".
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn parse_avahi(out: &str) -> Vec<(String, String)> {
+    let unescape = |s: &str| {
+        // avahi writes special characters as \DDD (decimal), e.g. "\032" = space.
+        let b = s.as_bytes();
+        let mut v = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(u8::is_ascii_digit) {
+                v.push(s[i + 1..i + 4].parse::<u8>().unwrap_or(b'?'));
+                i += 4;
+            } else {
+                v.push(b[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8_lossy(&v).into_owned()
+    };
+    let mut found: Vec<(String, String)> = out
+        .lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split(';').collect();
+            (f.len() > 7 && f[0] == "=").then(|| (unescape(f[3]), f[6].to_string()))
+        })
+        .collect();
+    found.sort();
+    found.dedup_by(|a, b| a.1 == b.1);
+    found
+}
+
+/// The shares a server offers (only normal folders, no "IPC$" etc.).
+/// Uses guest access, the given password or the system's saved login.
+/// Call off the UI thread.
+pub fn list_shares(host: &str, user: &str, password: &str) -> Result<Vec<String>, String> {
+    let host = host.trim().trim_start_matches("smb://").trim_end_matches('/');
+    if host.is_empty() {
+        return Err(l!("Kein Server angegeben", "No server given").into());
+    }
+    let limit = std::time::Duration::from_secs(15);
+    #[cfg(target_os = "macos")]
+    let out = {
+        let mut cmd = std::process::Command::new("smbutil");
+        if is_guest(user) {
+            cmd.args(["view", "-N", "-g", &format!("//{host}")]);
+        } else {
+            // -N: no password prompt; the keychain (saved by Finder) is used.
+            // (smbutil only reads a password from the terminal or the command
+            // line, where other processes could see it – so it isn't passed.)
+            let _ = password;
+            cmd.args(["view", "-N", &format!("//{}@{host}", user.trim())]);
+        }
+        output_within(&mut cmd, limit)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let out = {
+        let mut cmd = std::process::Command::new("smbclient");
+        cmd.args(["-g", "-L", host]);
+        if is_guest(user) && password.is_empty() {
+            cmd.arg("-N");
+        } else {
+            // The password goes in through the environment, not the command line.
+            cmd.args(["-U", user.trim()]).env("PASSWD", password);
+        }
+        output_within(&mut cmd, limit).map_err(|e| lf!("Freigaben können nicht abgefragt werden (smbclient): {e}", "Can't list the shares (smbclient): {e}"))?
+    };
+    let shares = parse_share_list(&out);
+    if shares.is_empty() {
+        return Err(if is_guest(user) {
+            l!("Keine Freigaben gefunden – evtl. ist kein Gastzugang erlaubt. Bitte Freigabe und Benutzer eintragen.", "No shares found – guest access may not be allowed. Please enter the share and user.").into()
+        } else {
+            l!("Keine Freigaben gefunden. Bitte den Freigabenamen eintragen.", "No shares found. Please enter the share name.").into()
+        });
+    }
+    Ok(shares)
+}
+
+/// Share names from `smbutil view` (table with a "Type" column) or
+/// `smbclient -g -L` ("Disk|Media|comment").
+fn parse_share_list(out: &str) -> Vec<String> {
+    let mut shares = Vec::new();
+    let mut type_col = None;
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("Disk|") {
+            shares.push(rest.split('|').next().unwrap_or("").to_string());
+            continue;
+        }
+        if type_col.is_none() {
+            if line.trim_start().starts_with("Share") && line.contains("Type") {
+                type_col = line.find("Type").map(|b| line[..b].chars().count());
+            }
+            continue;
+        }
+        let Some(col) = type_col else { continue };
+        if line.trim().is_empty() || line.trim_start().starts_with('-') || line.contains("shares listed") {
+            continue;
+        }
+        let name: String = line.chars().take(col).collect();
+        let kind: String = line.chars().skip(col).collect();
+        if kind.split_whitespace().next() == Some("Disk") {
+            shares.push(name.trim().to_string());
+        }
+    }
+    shares.retain(|s| !s.is_empty() && !s.ends_with('$'));
+    shares.sort_by_key(|s| s.to_lowercase());
+    shares.dedup();
+    shares
 }
 
 /// The folder path must never reveal the password (it is shown and saved).
@@ -284,6 +515,33 @@ mod tests {
             "mount volume \"smb://anna@nas/Media\" as user name \"anna\" with password \"a\\\"b\\\\c\""
         );
         assert_eq!(mac_script("smb://nas/Media", "", ""), "mount volume \"smb://nas/Media\"");
+    }
+
+    #[test]
+    fn guest_and_discovery() {
+        assert!(is_guest("") && is_guest(" Gast ") && is_guest("guest") && !is_guest("anna"));
+        assert_eq!(guest_url("nas.local", "Media"), "smb://guest:@nas.local/Media");
+        let browse = "Browsing for _smb._tcp\nDATE: ---Thu 08 Oct 2026---\n18:00:00.000  ...STARTING...\n\
+Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n\
+18:00:00.100  Add        3  14 local.               _smb._tcp.           TrueNAS\n\
+18:00:00.101  Add        2  14 local.               _smb._tcp.           Papas Mac mini\n";
+        assert_eq!(parse_dns_sd_browse(browse), ["Papas Mac mini", "TrueNAS"]);
+        let resolve = "Lookup TrueNAS._smb._tcp.local\n18:00:01.000  TrueNAS._smb._tcp.local. can be reached at truenas.local.:445 (interface 14)\n";
+        assert_eq!(parse_dns_sd_resolve(resolve).as_deref(), Some("truenas.local"));
+        let avahi = "+;eth0;IPv4;TrueNAS;_smb._tcp;local\n=;eth0;IPv4;Papas\\032Mac;_smb._tcp;local;mac.local;192.168.1.9;445;\n=;eth0;IPv6;Papas\\032Mac;_smb._tcp;local;mac.local;fe80::1;445;\n";
+        assert_eq!(parse_avahi(avahi), [("Papas Mac".to_string(), "mac.local".to_string())]);
+    }
+
+    #[test]
+    fn share_lists() {
+        let smbutil = "Share                                           Type    Comments\n-------------------------------\n\
+Media                                           Disk    \n\
+Fotos Familie                                   Disk    Bilder\n\
+IPC$                                            Pipe    IPC Service\n\
+\n3 shares listed\n";
+        assert_eq!(parse_share_list(smbutil), ["Fotos Familie", "Media"]);
+        let smbclient = "Disk|backup|\nDisk|print$|Printer Drivers\nIPC|IPC$|IPC Service\nDisk|Media|Filme\n";
+        assert_eq!(parse_share_list(smbclient), ["backup", "Media"]);
     }
 
     #[test]

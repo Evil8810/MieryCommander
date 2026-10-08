@@ -26,6 +26,12 @@ pub struct FtpForm {
     pub status: Option<(bool, String)>,
     /// SSH: fingerprint of an unknown host key waiting for confirmation.
     pub host_key: Option<String>,
+    /// SMB: running network search (`true`) or share listing (`false`).
+    pub lookup: Option<(bool, std::sync::mpsc::Receiver<Result<Vec<(String, String)>, String>>)>,
+    /// SMB: servers found in the network, as (name, host).
+    pub found_hosts: Vec<(String, String)>,
+    /// SMB: shares offered by the server.
+    pub found_shares: Vec<String>,
 }
 
 impl FtpForm {
@@ -38,7 +44,16 @@ impl FtpForm {
     }
 
     fn empty() -> Self {
-        FtpForm { selected: None, site: Site::default(), password: String::new(), status: None, host_key: None }
+        FtpForm {
+            selected: None,
+            site: Site::default(),
+            password: String::new(),
+            status: None,
+            host_key: None,
+            lookup: None,
+            found_hosts: Vec::new(),
+            found_shares: Vec::new(),
+        }
     }
 
     fn select(&mut self, i: usize, sites: &[Site]) {
@@ -46,6 +61,24 @@ impl FtpForm {
         self.selected = Some(i);
         self.site = sites[i].clone();
         self.password = if self.site.save_password { self.site.load_password().unwrap_or_default() } else { String::new() };
+        self.status = None;
+        self.found_shares.clear();
+    }
+
+    /// SMB: search the network for servers (`hosts`) or list the server's shares.
+    fn start_lookup(&mut self, hosts: bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (host, user, password) = (self.site.host.clone(), self.site.user.clone(), self.password.clone());
+        std::thread::spawn(move || {
+            let r = if hosts {
+                crate::smb::discover()
+            } else {
+                crate::smb::list_shares(&host, &user, &password).map(|v| v.into_iter().map(|s| (s.clone(), s)).collect())
+            };
+            let _ = tx.send(r);
+            fsutil::wake_ui();
+        });
+        self.lookup = Some((hosts, rx));
         self.status = None;
     }
 }
@@ -86,7 +119,11 @@ impl Dialog {
     fn layout_key(&self) -> u8 {
         match self {
             Dialog::FtpConnect(f) => {
-                (f.host_key.is_some() as u8) << 2 | f.site.protocol as u8
+                // Search results add rows; a new id lets the dialog grow with them.
+                (!f.found_shares.is_empty() as u8) << 4
+                    | (!f.found_hosts.is_empty() as u8) << 3
+                    | (f.host_key.is_some() as u8) << 2
+                    | f.site.protocol as u8
             }
             Dialog::Properties { pending, .. } => pending.is_some() as u8,
             _ => 0,
@@ -678,6 +715,29 @@ impl MieryApp {
             }
             return outcome;
         }
+        if let Some((hosts, rx)) = &form.lookup {
+            match rx.try_recv() {
+                Ok(Ok(found)) => {
+                    if *hosts {
+                        if found.is_empty() {
+                            form.status = Some((true, l!("Keine Server gefunden – bitte Namen oder IP-Adresse eintragen", "No servers found – please enter the name or IP address").into()));
+                        }
+                        form.found_hosts = found;
+                    } else {
+                        form.found_shares = found.into_iter().map(|(name, _)| name).collect();
+                    }
+                    form.lookup = None;
+                }
+                Ok(Err(e)) => {
+                    form.status = Some((true, e));
+                    form.lookup = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(200)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => form.lookup = None,
+            }
+        }
+        let searching = form.lookup.as_ref().map(|(hosts, _)| *hosts);
+        let mut lookup_request = None;
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(190.0);
@@ -685,8 +745,7 @@ impl MieryApp {
                 egui::ScrollArea::vertical().id_salt("ftp_sites").max_height(280.0).show(ui, |ui| {
                     let mut pick = None;
                     for (i, site) in self.cfg.sites.iter().enumerate() {
-                        let icon = if site.protocol == Protocol::Sftp { "🔒" } else { "🌐" };
-                        let r = ui.selectable_label(form.selected == Some(i), format!("{icon} {}", site.label()));
+                        let r = ui.selectable_label(form.selected == Some(i), format!("{} {}", site.icon(), site.label()));
                         if r.clicked() {
                             pick = Some(i);
                         }
@@ -743,18 +802,74 @@ impl MieryApp {
                     ui.add(egui::TextEdit::singleline(&mut site.name).hint_text("optional"));
                     ui.end_row();
                     ui.label("Server:");
-                    let r = ui.add(egui::TextEdit::singleline(&mut site.host).hint_text("server.example.com"));
-                    if fresh && site.host.is_empty() {
-                        r.request_focus();
-                    }
+                    let smb = site.protocol == Protocol::Smb;
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut site.host).hint_text(if smb { "nas.local / 192.168.1.10" } else { "server.example.com" }));
+                        if fresh && site.host.is_empty() {
+                            r.request_focus();
+                        }
+                        if smb {
+                            if searching == Some(true) {
+                                ui.spinner();
+                            } else if ui
+                                .add_enabled(searching.is_none(), egui::Button::new(l!("🔍 Suchen", "🔍 Search")))
+                                .on_hover_text(l!("SMB-Server im Netzwerk suchen", "Search the network for SMB servers"))
+                                .clicked()
+                            {
+                                lookup_request = Some(true);
+                            }
+                        }
+                    });
                     ui.end_row();
-                    if site.protocol == Protocol::Smb {
+                    if smb {
                         // SMB: the desktop handles the connection and the login.
+                        if !form.found_hosts.is_empty() {
+                            ui.label("");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.set_max_width(330.0);
+                                for (name, host) in &form.found_hosts {
+                                    let r = ui.selectable_label(site.host == *host, format!("🖧 {name}")).on_hover_text(host);
+                                    if r.clicked() {
+                                        site.host = host.clone();
+                                        if site.name.trim().is_empty() {
+                                            site.name = name.clone();
+                                        }
+                                        site.remote_dir.clear();
+                                        form.found_shares.clear();
+                                        lookup_request = Some(false);
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
                         ui.label(l!("Freigabe:", "Share:"));
-                        ui.add(egui::TextEdit::singleline(&mut site.remote_dir).hint_text(l!("optional, leer = alle Freigaben", "optional, empty = all shares")));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut site.remote_dir).hint_text(l!("leer = alle Freigaben", "empty = all shares")));
+                            if searching == Some(false) {
+                                ui.spinner();
+                            } else if ui
+                                .add_enabled(searching.is_none() && !site.host.trim().is_empty(), egui::Button::new(l!("📂 Anzeigen", "📂 List")))
+                                .on_hover_text(l!("Freigaben des Servers anzeigen", "Show the server's shares"))
+                                .clicked()
+                            {
+                                lookup_request = Some(false);
+                            }
+                        });
                         ui.end_row();
+                        if !form.found_shares.is_empty() {
+                            ui.label("");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.set_max_width(330.0);
+                                for name in &form.found_shares {
+                                    if ui.selectable_label(site.remote_dir == *name, format!("📁 {name}")).clicked() {
+                                        site.remote_dir = name.clone();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
                         ui.label(l!("Benutzer:", "User:"));
-                        ui.add(egui::TextEdit::singleline(&mut site.user).hint_text(l!("optional, auch DOMÄNE\\name", "optional, also DOMAIN\\name")));
+                        ui.add(egui::TextEdit::singleline(&mut site.user).hint_text(l!("leer = Gast, auch DOMÄNE\\name", "empty = guest, also DOMAIN\\name")));
                         ui.end_row();
                         ui.label(l!("Passwort:", "Password:"));
                         ui.add(
@@ -830,7 +945,7 @@ impl MieryApp {
                     Protocol::Smb => {
                         ui.label(
                             RichText::new(if cfg!(target_os = "macos") {
-                                l!("Wird vom Finder eingebunden. Ohne Passwort fragt macOS selbst nach (Schlüsselbund).", "Mounted by the Finder. Without a password macOS asks itself (keychain).")
+                                l!("Wird vom Finder eingebunden. Ohne Benutzer wird als Gast verbunden; mit Benutzer und ohne Passwort fragt macOS selbst nach (Schlüsselbund).", "Mounted by the Finder. Without a user it connects as guest; with a user and no password macOS asks itself (keychain).")
                             } else {
                                 l!("Wird wie in Dolphin eingebunden (KDE: kio-fuse, GNOME: gio). Ohne Passwort fragt das System selbst nach bzw. nutzt KWallet.", "Mounted like in Dolphin (KDE: kio-fuse, GNOME: gio). Without a password the system asks itself or uses KWallet.")
                             })
@@ -842,6 +957,9 @@ impl MieryApp {
                 ui.checkbox(&mut site.save_password, l!("Passwort im Schlüsselbund speichern", "Save password in the keyring"));
             });
         });
+        if let Some(hosts) = lookup_request {
+            form.start_lookup(hosts);
+        }
         if let Some((is_err, msg)) = &form.status {
             let c = if *is_err { egui::Color32::from_rgb(200, 60, 60) } else { ui.visuals().text_color() };
             ui.add(egui::Label::new(RichText::new(msg).color(c)).wrap());
