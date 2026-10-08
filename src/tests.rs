@@ -754,6 +754,11 @@ fn connect_dialog_keeps_full_size() {
     f.lookup = None;
     f.found_hosts.clear();
     f.found_shares.clear();
+    // A long error message makes the dialog taller – the buttons must stay visible.
+    form(&mut h).status = Some((true, "Freigaben können nicht abgefragt werden (smbclient): No such file or directory (os error 2) – ".repeat(3)));
+    steps(&mut h, 3);
+    assert_buttons_visible(&mut h, "with a long error message");
+    form(&mut h).status = None;
     form(&mut h).site.protocol = Protocol::Ftp;
     steps(&mut h, 3);
     assert_buttons_visible(&mut h, "back to FTP");

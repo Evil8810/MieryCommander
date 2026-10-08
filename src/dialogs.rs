@@ -120,7 +120,10 @@ impl Dialog {
         match self {
             Dialog::FtpConnect(f) => {
                 // Search results add rows; a new id lets the dialog grow with them.
-                (!f.found_shares.is_empty() as u8) << 4
+                // So does a (possibly multi-line) status message.
+                let status = f.status.as_ref().map_or(0, |(_, m)| 1 + (m.len() / 70).min(2) as u8 + m.lines().count().min(3) as u8);
+                status << 5
+                    | (!f.found_shares.is_empty() as u8) << 4
                     | (!f.found_hosts.is_empty() as u8) << 3
                     | (f.host_key.is_some() as u8) << 2
                     | f.site.protocol as u8
