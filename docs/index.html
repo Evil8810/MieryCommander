@@ -149,8 +149,8 @@
       <a class="btn primary" href="#install" data-i18n="cta_install">Installieren</a>
       <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
     </div>
-    <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux &amp; macOS · Rust + egui</div>
-    <div class="shot"><img src="img/main.png" alt="MieryCommander Hauptfenster" width="1280" height="760"></div>
+    <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux &amp; macOS · Deutsch &amp; English · Rust + egui</div>
+    <div class="shot"><img data-shot="main" src="img/main.png" alt="MieryCommander Hauptfenster" width="1280" height="760"></div>
   </div>
 
   <section id="features">
@@ -166,6 +166,7 @@
         <div class="card"><h3>✏️ <span data-i18n="f6_t">Mehrfach-Umbenennen</span></h3><p data-i18n="f6">Masken wie [N], [C], [Y][M][D], Suchen &amp; Ersetzen mit regulären Ausdrücken und Live-Vorschau.</p></div>
         <div class="card"><h3>📋 <span data-i18n="f7_t">Zwischenablage</span></h3><p data-i18n="f7">Strg+C / X / V für Dateien – auch mit Dolphin, Nautilus &amp; Co. und zwischen Servern und Archiven.</p></div>
         <div class="card"><h3>🔍 <span data-i18n="f8_t">Suchen &amp; Ansehen</span></h3><p data-i18n="f8">Dateisuche mit Wildcards, RegEx und Textinhalt; Lister für Text, Hex und Bilder, Schnellansicht, Branch-View.</p></div>
+        <div class="card"><h3>🌍 <span data-i18n="f10_t">Deutsch &amp; Englisch</span></h3><p data-i18n="f10">Oberfläche auf Deutsch oder Englisch, automatisch nach Systemsprache oder in den Einstellungen umschaltbar – inklusive Zahlen- und Datumsformat.</p></div>
         <div class="card"><h3>⚡ <span data-i18n="f9_t">Bleibt bedienbar</span></h3><p data-i18n="f9">Alles läuft im Hintergrund mit Fortschritt – ein hängendes Netzlaufwerk friert die Oberfläche nicht ein.</p></div>
       </div>
     </div>
@@ -176,11 +177,11 @@
       <h2 data-i18n="shots_title">Screenshots</h2>
       <p class="lead" data-i18n="shots_lead">Zum Vergrößern anklicken.</p>
       <div class="gallery">
-        <figure><img src="img/context-menu.png" alt="" loading="lazy"><figcaption data-i18n="s1">Kontextmenü mit allen Dateiaktionen</figcaption></figure>
-        <figure><img src="img/compare.png" alt="" loading="lazy"><figcaption data-i18n="s2">Dateien vergleichen</figcaption></figure>
-        <figure><img src="img/sync.png" alt="" loading="lazy"><figcaption data-i18n="s3">Verzeichnisse synchronisieren</figcaption></figure>
-        <figure><img src="img/archive.png" alt="" loading="lazy"><figcaption data-i18n="s4">Ein ZIP-Archiv wie einen Ordner öffnen</figcaption></figure>
-        <figure><img src="img/connect.png" alt="" loading="lazy"><figcaption data-i18n="s5">Verbindung zu einem SFTP-Server</figcaption></figure>
+        <figure><img data-shot="context-menu" src="img/context-menu.png" alt="" loading="lazy"><figcaption data-i18n="s1">Kontextmenü mit allen Dateiaktionen</figcaption></figure>
+        <figure><img data-shot="compare" src="img/compare.png" alt="" loading="lazy"><figcaption data-i18n="s2">Dateien vergleichen</figcaption></figure>
+        <figure><img data-shot="sync" src="img/sync.png" alt="" loading="lazy"><figcaption data-i18n="s3">Verzeichnisse synchronisieren</figcaption></figure>
+        <figure><img data-shot="archive" src="img/archive.png" alt="" loading="lazy"><figcaption data-i18n="s4">Ein ZIP-Archiv wie einen Ordner öffnen</figcaption></figure>
+        <figure><img data-shot="connect" src="img/connect.png" alt="" loading="lazy"><figcaption data-i18n="s5">Verbindung zu einem SFTP-Server</figcaption></figure>
       </div>
     </div>
   </section>
@@ -249,7 +250,7 @@ const T = {
     nav_features: "Features", nav_shots: "Screenshots", nav_install: "Install", nav_keys: "Shortcuts",
     tagline: "A fast, dual-pane file manager – written in Rust, for Linux and macOS.",
     cta_install: "Install", cta_github: "Source code on GitHub",
-    badges: "Open source · MIT license · Linux & macOS · Rust + egui",
+    badges: "Open source · MIT license · Linux & macOS · English & German · Rust + egui",
     features_title: "Features",
     features_lead: "Everything you expect from a commander – just as usable with the keyboard as with the mouse.",
     f1_t: "Two panels & tabs", f1: "Function key bar, tabs, drive bar, type-to-search, quick filter, favourites and history.",
@@ -260,6 +261,7 @@ const T = {
     f6_t: "Multi-rename", f6: "Masks like [N], [C], [Y][M][D], search & replace with regular expressions and live preview.",
     f7_t: "Clipboard", f7: "Ctrl+C / X / V for files – also with Dolphin, Nautilus & co., between servers and archives.",
     f8_t: "Search & view", f8: "File search with wildcards, regex and text content; lister for text, hex and images, quick view, branch view.",
+    f10_t: "English & German", f10: "The interface is in English or German – picked from the system language or switched in the settings, number and date formats included.",
     f9_t: "Always responsive", f9: "Everything runs in the background with progress – a hanging network drive never freezes the window.",
     shots_title: "Screenshots", shots_lead: "Click to enlarge.",
     s1: "Context menu with all file actions", s2: "Comparing two files", s3: "Synchronizing directories",
@@ -287,6 +289,10 @@ function setLang(lang) {
   });
   document.querySelectorAll("[data-set-lang]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.setLang === lang)));
   document.title = "MieryCommander";
+  // Screenshots of the app in the chosen language.
+  document.querySelectorAll("img[data-shot]").forEach(img => {
+    img.src = "img/" + img.dataset.shot + (lang === "en" ? "-en" : "") + ".png";
+  });
   try { localStorage.setItem("lang", lang); } catch (e) {}
 }
 let initial = "de";

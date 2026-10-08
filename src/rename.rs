@@ -134,7 +134,7 @@ impl MultiRename {
             }
         };
         if out.is_empty() || out.contains('/') {
-            return Err("ungültiger Name".into());
+            return Err(l!("ungültiger Name", "invalid name").into());
         }
         Ok(out)
     }
@@ -152,12 +152,12 @@ impl MultiRename {
         let mut targets: Vec<&PathBuf> = plan.iter().map(|(_, d)| d).collect();
         targets.sort();
         if targets.windows(2).any(|w| w[0] == w[1]) {
-            return Err("Mehrere Dateien bekämen denselben Namen".into());
+            return Err(l!("Mehrere Dateien bekämen denselben Namen", "Several files would get the same name").into());
         }
         let sources: std::collections::HashSet<&PathBuf> = plan.iter().map(|(s, _)| s).collect();
         for (_, d) in &plan {
             if d.exists() && !sources.contains(d) {
-                return Err(format!("{} existiert bereits", d.to_string_lossy()));
+                return Err(lf!("{} existiert bereits", "{} already exists", d.to_string_lossy()));
             }
         }
         // Two phases so that swaps (a→b, b→a) work.
@@ -185,24 +185,24 @@ impl MultiRename {
         }
         let mut changed = false;
         let mut open = self.open;
-        egui::Window::new("Mehrfach-Umbenennen")
+        egui::Window::new(l!("Mehrfach-Umbenennen", "Multi-rename"))
             .open(&mut open)
             .default_size([800.0, 520.0])
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
                 egui::Grid::new("mr_grid").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Name-Maske:");
+                    ui.label(l!("Name-Maske:", "Name mask:"));
                     ui.text_edit_singleline(&mut self.name_mask);
-                    ui.label("Suchen:");
+                    ui.label(l!("Suchen:", "Search:"));
                     ui.text_edit_singleline(&mut self.search);
                     ui.end_row();
-                    ui.label("Erweiterung:");
+                    ui.label(l!("Erweiterung:", "Extension:"));
                     ui.text_edit_singleline(&mut self.ext_mask);
-                    ui.label("Ersetzen:");
+                    ui.label(l!("Ersetzen:", "Replace:"));
                     ui.text_edit_singleline(&mut self.replace);
                     ui.end_row();
-                    ui.label("Zähler ab / Schritt / Stellen:");
+                    ui.label(l!("Zähler ab / Schritt / Stellen:", "Counter start / step / digits:"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut self.counter_start));
                         ui.add(egui::DragValue::new(&mut self.counter_step));
@@ -211,21 +211,21 @@ impl MultiRename {
                     ui.checkbox(&mut self.use_regex, "RegEx");
                     egui::ComboBox::from_id_salt("mr_case")
                         .selected_text(match self.case {
-                            CaseMode::Keep => "Groß/klein unverändert",
+                            CaseMode::Keep => l!("Groß/klein unverändert", "Case unchanged"),
                             CaseMode::Lower => "kleinbuchstaben",
                             CaseMode::Upper => "GROSSBUCHSTABEN",
-                            CaseMode::FirstUpper => "Erster groß",
+                            CaseMode::FirstUpper => l!("Erster groß", "First upper"),
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.case, CaseMode::Keep, "Groß/klein unverändert");
+                            ui.selectable_value(&mut self.case, CaseMode::Keep, l!("Groß/klein unverändert", "Case unchanged"));
                             ui.selectable_value(&mut self.case, CaseMode::Lower, "kleinbuchstaben");
                             ui.selectable_value(&mut self.case, CaseMode::Upper, "GROSSBUCHSTABEN");
-                            ui.selectable_value(&mut self.case, CaseMode::FirstUpper, "Erster groß");
+                            ui.selectable_value(&mut self.case, CaseMode::FirstUpper, l!("Erster groß", "First upper"));
                         });
                     ui.end_row();
                 });
                 ui.label(
-                    RichText::new("Platzhalter: [N] Name, [N2-5] Zeichen 2–5, [E] Erweiterung, [C] Zähler, [P] Ordner, [Y] [M] [D] Datum")
+                    RichText::new(l!("Platzhalter: [N] Name, [N2-5] Zeichen 2–5, [E] Erweiterung, [C] Zähler, [P] Ordner, [Y] [M] [D] Datum", "Placeholders: [N] name, [N2-5] characters 2–5, [E] extension, [C] counter, [P] folder, [Y] [M] [D] date"))
                         .small()
                         .weak(),
                 );
@@ -242,10 +242,10 @@ impl MultiRename {
                     .auto_shrink([false, false])
                     .header(20.0, |mut h| {
                         h.col(|ui| {
-                            ui.strong("Alter Name");
+                            ui.strong(l!("Alter Name", "Old name"));
                         });
                         h.col(|ui| {
-                            ui.strong("Neuer Name");
+                            ui.strong(l!("Neuer Name", "New name"));
                         });
                     })
                     .body(|body| {
@@ -269,11 +269,11 @@ impl MultiRename {
                         });
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("▶ Umbenennen").clicked() {
+                    if ui.button(l!("▶ Umbenennen", "▶ Rename")).clicked() {
                         self.message = Some(match self.execute() {
                             Ok(n) => {
                                 changed = true;
-                                (true, format!("{n} Datei(en) umbenannt"))
+                                (true, lf!("{n} Datei(en) umbenannt", "{n} file(s) renamed"))
                             }
                             Err(e) => (false, e),
                         });

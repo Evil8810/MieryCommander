@@ -145,7 +145,7 @@ fn default_action(state: State, opts: &Options) -> Action {
 }
 
 pub fn scan(left: &Path, right: &Path, opts: &Options) -> Result<Vec<Item>, String> {
-    let mask = fsutil::wildcard_regex(&opts.mask).ok_or_else(|| "Ungültige Dateimaske".to_string())?;
+    let mask = fsutil::wildcard_regex(&opts.mask).ok_or_else(|| l!("Ungültige Dateimaske", "Invalid file mask").to_string())?;
     let l = collect(left, opts, &mask).map_err(|e| format!("{}: {e}", left.display()))?;
     let r = collect(right, opts, &mask).map_err(|e| format!("{}: {e}", right.display()))?;
     let mut keys: Vec<&String> = l.keys().chain(r.keys()).collect();
@@ -322,47 +322,47 @@ impl SyncWindow {
         }
         let mut request = None;
         let mut open = self.open;
-        egui::Window::new("Verzeichnisse synchronisieren")
+        egui::Window::new(l!("Verzeichnisse synchronisieren", "Synchronize folders"))
             .open(&mut open)
             .default_size([1100.0, 640.0])
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Links:");
+                    ui.label(l!("Links:", "Left:"));
                     ui.add(egui::TextEdit::singleline(&mut self.left).desired_width(400.0));
-                    if ui.button("↔").on_hover_text("Seiten tauschen").clicked() {
+                    if ui.button("↔").on_hover_text(l!("Seiten tauschen", "Swap sides")).clicked() {
                         std::mem::swap(&mut self.left, &mut self.right);
                         self.start_scan();
                     }
-                    ui.label("Rechts:");
+                    ui.label(l!("Rechts:", "Right:"));
                     ui.add(egui::TextEdit::singleline(&mut self.right).desired_width(f32::INFINITY));
                 });
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.opts.subdirs, "Unterordner");
-                    ui.checkbox(&mut self.opts.by_content, "Nach Inhalt vergleichen");
-                    ui.checkbox(&mut self.opts.ignore_date, "Datum ignorieren");
-                    ui.checkbox(&mut self.opts.empty_dirs, "Leere Ordner");
-                    ui.checkbox(&mut self.opts.asymmetric, "Asymmetrisch (rechts = Spiegel von links)")
-                        .on_hover_text("Rechts wird an links angeglichen – auch Löschen von Dateien, die links fehlen");
-                    ui.label("Maske:");
+                    ui.checkbox(&mut self.opts.subdirs, l!("Unterordner", "Subfolders"));
+                    ui.checkbox(&mut self.opts.by_content, l!("Nach Inhalt vergleichen", "Compare by content"));
+                    ui.checkbox(&mut self.opts.ignore_date, l!("Datum ignorieren", "Ignore date"));
+                    ui.checkbox(&mut self.opts.empty_dirs, l!("Leere Ordner", "Empty folders"));
+                    ui.checkbox(&mut self.opts.asymmetric, l!("Asymmetrisch (rechts = Spiegel von links)", "Asymmetric (right = mirror of left)"))
+                        .on_hover_text(l!("Rechts wird an links angeglichen – auch Löschen von Dateien, die links fehlen", "The right side is made equal to the left – including deleting files missing on the left"));
+                    ui.label(l!("Maske:", "Mask:"));
                     ui.add(egui::TextEdit::singleline(&mut self.opts.mask).desired_width(90.0));
                     if self.is_scanning() {
                         ui.spinner();
-                        ui.label(format!("Vergleiche… {:.0} s", self.scan_started.elapsed().as_secs_f32().floor()));
+                        ui.label(lf!("Vergleiche… {:.0} s", "Comparing… {:.0} s", self.scan_started.elapsed().as_secs_f32().floor()));
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-                    } else if ui.button(RichText::new("🔄 Vergleichen").strong()).clicked() {
+                    } else if ui.button(RichText::new(l!("🔄 Vergleichen", "🔄 Compare")).strong()).clicked() {
                         self.start_scan();
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Zeigen:");
+                    ui.label(l!("Zeigen:", "Show:"));
                     let count = |f: &dyn Fn(State) -> bool| self.items.iter().filter(|i| f(i.state)).count();
                     let labels = [
-                        format!("➡ links neuer/nur links ({})", count(&|s| matches!(s, State::LeftOnly | State::LeftNewer))),
-                        format!("= gleich ({})", count(&|s| s == State::Equal)),
-                        format!("≠ ungleich ({})", count(&|s| s == State::Differs)),
-                        format!("⬅ rechts neuer/nur rechts ({})", count(&|s| matches!(s, State::RightOnly | State::RightNewer))),
+                        lf!("➡ links neuer/nur links ({})", "➡ left newer/left only ({})", count(&|s| matches!(s, State::LeftOnly | State::LeftNewer))),
+                        lf!("= gleich ({})", "= equal ({})", count(&|s| s == State::Equal)),
+                        lf!("≠ ungleich ({})", "≠ different ({})", count(&|s| s == State::Differs)),
+                        lf!("⬅ rechts neuer/nur rechts ({})", "⬅ right newer/right only ({})", count(&|s| matches!(s, State::RightOnly | State::RightNewer))),
                     ];
                     for (i, l) in labels.iter().enumerate() {
                         ui.toggle_value(&mut self.show[i], l);
@@ -390,7 +390,7 @@ impl SyncWindow {
                     .max_scroll_height(table_h)
                     .auto_shrink([false, false])
                     .header(row_h, |mut h| {
-                        for t in ["Datei", "Größe links", "Datum links", "Aktion", "Datum rechts", "Größe rechts"] {
+                        for t in [l!("Datei", "File"), l!("Größe links", "Size left"), l!("Datum links", "Date left"), l!("Aktion", "Action"), l!("Datum rechts", "Date right"), l!("Größe rechts", "Size right")] {
                             h.col(|ui| {
                                 ui.strong(t);
                             });
@@ -432,7 +432,7 @@ impl SyncWindow {
                                 };
                                 if ui
                                     .add(egui::Button::new(RichText::new(text).strong().color(color)).frame(false))
-                                    .on_hover_text("Klicken zum Ändern der Aktion")
+                                    .on_hover_text(l!("Klicken zum Ändern der Aktion", "Click to change the action"))
                                     .clicked()
                                 {
                                     clicked_action = Some(idx);
@@ -459,14 +459,14 @@ impl SyncWindow {
                 let to_l = ops.iter().filter(|o| matches!(o, Op::Copy { to, .. } if to.starts_with(&l))).count();
                 let dels = ops.iter().filter(|o| matches!(o, Op::Delete(_))).count();
                 ui.horizontal(|ui| {
-                    ui.label(format!("{to_r} ➡ nach rechts · {to_l} ⬅ nach links · {dels} löschen"));
+                    ui.label(lf!("{to_r} ➡ nach rechts · {to_l} ⬅ nach links · {dels} löschen", "{to_r} ➡ to the right · {to_l} ⬅ to the left · {dels} to delete"));
                     let stale = self.scanned_for.as_ref() != Some(&(l.clone(), r.clone()));
                     let enabled = !ops.is_empty() && !job_running && !self.is_scanning() && !stale;
-                    if ui.add_enabled(enabled, egui::Button::new(RichText::new("▶ Synchronisieren").strong())).clicked() {
+                    if ui.add_enabled(enabled, egui::Button::new(RichText::new(l!("▶ Synchronisieren", "▶ Synchronize")).strong())).clicked() {
                         request = Some(SyncRequest::Run(ops.clone()));
                     }
                     if stale {
-                        ui.label(RichText::new("Pfade geändert – bitte neu vergleichen").small().weak());
+                        ui.label(RichText::new(l!("Pfade geändert – bitte neu vergleichen", "Paths changed – please compare again")).small().weak());
                     }
                 });
             });

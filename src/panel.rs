@@ -264,7 +264,7 @@ impl Tab {
                 Location::Ftp { id, path } => (
                     match remote::get(*id) {
                         Some(c) => c.list(path),
-                        None => Err("Verbindung zum Server ist getrennt".into()),
+                        None => Err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
                     },
                     None,
                     None,
@@ -644,8 +644,7 @@ impl Tab {
                 }
             }
         }
-        format!(
-            "{} / {} in {} / {} Datei(en), {} / {} Ordner",
+        lf!("{} / {} in {} / {} Datei(en), {} / {} Ordner", "{} / {} in {} / {} file(s), {} / {} folders",
             fsutil::format_size_short(sel_bytes),
             fsutil::format_size_short(total),
             sel_files,
@@ -804,12 +803,12 @@ pub fn show_panel(
                 actions.push(PanelAction::CloseTab(i));
             }
             r.context_menu(|ui| {
-                if ui.button("Tab schließen").clicked() {
+                if ui.button(l!("Tab schließen", "Close tab")).clicked() {
                     actions.push(PanelAction::CloseTab(i));
                 }
             });
         }
-        if ui.small_button("+").on_hover_text("Neuer Tab (Strg+T)").clicked() {
+        if ui.small_button("+").on_hover_text(l!("Neuer Tab (Strg+T)", "New tab (Ctrl+T)")).clicked() {
             actions.push(PanelAction::NewTab);
         }
     });
@@ -880,8 +879,7 @@ pub fn show_panel(
         }
         if let Some((free, total)) = tab.space {
             ui.label(
-                RichText::new(format!(
-                    "{} frei von {}",
+                RichText::new(lf!("{} frei von {}", "{} free of {}",
                     fsutil::format_size_short(free),
                     fsutil::format_size_short(total)
                 ))
@@ -891,17 +889,17 @@ pub fn show_panel(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .small_button("=")
-                .on_hover_text("Gleicher Ordner wie im anderen Panel (Strg+G)")
+                .on_hover_text(l!("Gleicher Ordner wie im anderen Panel (Strg+G)", "Same folder as in the other panel (Ctrl+G)"))
                 .clicked()
             {
                 actions.push(PanelAction::Cmd(crate::app::Cmd::TakeOtherDir));
             }
-            if ui.small_button("..").on_hover_text("Übergeordneter Ordner").clicked() {
+            if ui.small_button("..").on_hover_text(l!("Übergeordneter Ordner", "Parent folder")).clicked() {
                 if let Some((p, _)) = tab.loc.parent() {
                     actions.push(PanelAction::Navigate(p));
                 }
             }
-            if ui.small_button("/").on_hover_text("Wurzel").clicked() {
+            if ui.small_button("/").on_hover_text(l!("Wurzel", "Root")).clicked() {
                 actions.push(PanelAction::Navigate(Location::Dir("/".into())));
             }
             if ui.small_button("~").on_hover_text("Home").clicked()
@@ -944,7 +942,7 @@ pub fn show_panel(
             } else {
                 let mut text = tab.loc.display();
                 if tab.branch {
-                    text.push_str("   [Branch-View: alle Unterordner]");
+                    text.push_str(l!("   [Branch-View: alle Unterordner]", "   [Branch view: all subfolders]"));
                 }
                 if !tab.filter.is_empty() {
                     text.push_str(&format!("   [Filter: {}]", tab.filter));
@@ -971,7 +969,7 @@ pub fn show_panel(
                         None => tab.loc.display(),
                     });
                 }
-                r.on_hover_text("Doppelklick zum Bearbeiten");
+                r.on_hover_text(l!("Doppelklick zum Bearbeiten", "Double-click to edit"));
             }
         });
 
@@ -983,7 +981,7 @@ pub fn show_panel(
             let r = ui.add(
                 egui::TextEdit::singleline(&mut tab.filter)
                     .id(id)
-                    .hint_text("Teil des Namens… (Esc schließt)")
+                    .hint_text(l!("Teil des Namens… (Esc schließt)", "Part of the name… (Esc closes)"))
                     .desired_width(f32::INFINITY),
             );
             if r.changed() {
@@ -1011,17 +1009,17 @@ pub fn show_panel(
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    let what = if tab.loc.ftp().is_some() { "Lade Verzeichnis vom Server…" } else { "Lade Verzeichnis…" };
+                    let what = if tab.loc.ftp().is_some() { l!("Lade Verzeichnis vom Server…", "Loading folder from server…") } else { l!("Lade Verzeichnis…", "Loading folder…") };
                     ui.label(format!("{what} {:.0} s", waited.as_secs_f32().floor()));
                 });
                 if waited.as_secs() >= 3 {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            RichText::new("Das dauert ungewöhnlich lange – vielleicht antwortet ein Netzlaufwerk oder Server nicht. Die App läuft weiter.")
+                            RichText::new(l!("Das dauert ungewöhnlich lange – vielleicht antwortet ein Netzlaufwerk oder Server nicht. Die App läuft weiter.", "This is taking unusually long – maybe a network drive or server is not responding. The app keeps running."))
                                 .small()
                                 .weak(),
                         );
-                        if ui.small_button("Abbrechen").clicked() {
+                        if ui.small_button(l!("Abbrechen", "Cancel")).clicked() {
                             actions.push(PanelAction::CancelLoading);
                         }
                     });
@@ -1084,9 +1082,9 @@ pub fn show_panel(
             .header(row_h + 2.0, |mut header| {
                 for (k, label) in [
                     (SortKey::Name, "Name"),
-                    (SortKey::Ext, "Erw."),
-                    (SortKey::Size, "Größe"),
-                    (SortKey::Date, "Datum"),
+                    (SortKey::Ext, l!("Erw.", "Ext")),
+                    (SortKey::Size, l!("Größe", "Size")),
+                    (SortKey::Date, l!("Datum", "Date")),
                 ] {
                     header.col(|ui| {
                         if ui
@@ -1098,7 +1096,7 @@ pub fn show_panel(
                     });
                 }
                 header.col(|ui| {
-                    ui.strong("Rechte");
+                    ui.strong(l!("Rechte", "Attr"));
                 });
             })
             .body(|body| {
@@ -1149,7 +1147,7 @@ pub fn show_panel(
                             let s = if e.is_dir {
                                 match tab.dir_sizes.get(&e.name) {
                                     Some(s) => fsutil::format_size(*s),
-                                    None if tab.sizing.contains(&e.name) => "berechne…".into(),
+                                    None if tab.sizing.contains(&e.name) => l!("berechne…", "calculating…").into(),
                                     None => "<DIR>".into(),
                                 }
                             } else {
@@ -1262,7 +1260,7 @@ pub fn expand_tilde(s: &str) -> String {
 
 /// One menu entry with its keyboard shortcut on the right.
 fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str, cmd: crate::app::Cmd, out: &mut Option<crate::app::Cmd>) {
-    if ui.add(egui::Button::new(label).shortcut_text(shortcut)).clicked() {
+    if ui.add(egui::Button::new(label).shortcut_text(crate::i18n::keys(shortcut))).clicked() {
         *out = Some(cmd);
         ui.close();
     }
@@ -1276,73 +1274,73 @@ fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Op
     let in_archive = matches!(loc, Location::Archive { .. });
     ui.set_min_width(230.0);
     if marked > 1 {
-        ui.label(RichText::new(format!("{marked} markierte Elemente")).weak().small());
+        ui.label(RichText::new(lf!("{marked} markierte Elemente", "{marked} marked items")).weak().small());
         ui.separator();
     }
     if !e.is_parent {
-        menu_item(ui, if e.is_dir { "Öffnen" } else { "Öffnen (Standardprogramm)" }, "Enter", Cmd::OpenDefault, &mut out);
+        menu_item(ui, if e.is_dir { l!("Öffnen", "Open") } else { l!("Öffnen (Standardprogramm)", "Open (default application)") }, "Enter", Cmd::OpenDefault, &mut out);
         if !e.is_dir {
-            menu_item(ui, "Ansehen", "F3", Cmd::View, &mut out);
-            menu_item(ui, "Bearbeiten", "F4", Cmd::Edit, &mut out);
+            menu_item(ui, l!("Ansehen", "View"), "F3", Cmd::View, &mut out);
+            menu_item(ui, l!("Bearbeiten", "Edit"), "F4", Cmd::Edit, &mut out);
             if local {
-                let label = if marked == 2 { "Markierte vergleichen" } else { "Mit Datei im anderen Panel vergleichen" };
+                let label = if marked == 2 { l!("Markierte vergleichen", "Compare marked") } else { l!("Mit Datei im anderen Panel vergleichen", "Compare with file in the other panel") };
                 menu_item(ui, label, "", Cmd::CompareFiles, &mut out);
             }
         }
         ui.separator();
         if !in_archive {
-            menu_item(ui, "Ausschneiden", "Strg+X", Cmd::ClipCut, &mut out);
+            menu_item(ui, l!("Ausschneiden", "Cut"), "Strg+X", Cmd::ClipCut, &mut out);
         }
-        menu_item(ui, "Kopieren", "Strg+C", Cmd::ClipCopy, &mut out);
+        menu_item(ui, l!("Kopieren", "Copy"), "Strg+C", Cmd::ClipCopy, &mut out);
     }
-    menu_item(ui, "Einfügen", "Strg+V", Cmd::ClipPaste, &mut out);
+    menu_item(ui, l!("Einfügen", "Paste"), "Strg+V", Cmd::ClipPaste, &mut out);
     if !e.is_parent {
         ui.separator();
-        menu_item(ui, "Kopieren nach…", "F5", Cmd::Copy, &mut out);
+        menu_item(ui, l!("Kopieren nach…", "Copy to…"), "F5", Cmd::Copy, &mut out);
         if !in_archive {
-            menu_item(ui, "Verschieben nach…", "F6", Cmd::Move, &mut out);
-            menu_item(ui, "Umbenennen", "Shift+F6", Cmd::Rename, &mut out);
+            menu_item(ui, l!("Verschieben nach…", "Move to…"), "F6", Cmd::Move, &mut out);
+            menu_item(ui, l!("Umbenennen", "Rename"), "Shift+F6", Cmd::Rename, &mut out);
             if local {
-                menu_item(ui, "In den Papierkorb", "F8", Cmd::Delete, &mut out);
-                menu_item(ui, "Endgültig löschen", "Shift+F8", Cmd::DeletePermanent, &mut out);
+                menu_item(ui, l!("In den Papierkorb", "Move to trash"), "F8", Cmd::Delete, &mut out);
+                menu_item(ui, l!("Endgültig löschen", "Delete permanently"), "Shift+F8", Cmd::DeletePermanent, &mut out);
             } else {
-                menu_item(ui, "Löschen", "F8", Cmd::Delete, &mut out);
+                menu_item(ui, l!("Löschen", "Delete"), "F8", Cmd::Delete, &mut out);
             }
         }
     }
     if e.is_dir {
         ui.separator();
-        menu_item(ui, "Im anderen Panel öffnen", "", Cmd::OpenInOther, &mut out);
-        menu_item(ui, "In neuem Tab öffnen", "", Cmd::OpenInNewTab, &mut out);
+        menu_item(ui, l!("Im anderen Panel öffnen", "Open in the other panel"), "", Cmd::OpenInOther, &mut out);
+        menu_item(ui, l!("In neuem Tab öffnen", "Open in new tab"), "", Cmd::OpenInNewTab, &mut out);
         if local && !e.is_parent {
-            menu_item(ui, "Ordnergröße berechnen", "Leertaste", Cmd::CalcSize, &mut out);
-            menu_item(ui, "Zu Favoriten hinzufügen", "", Cmd::AddEntryToHotlist, &mut out);
+            menu_item(ui, l!("Ordnergröße berechnen", "Calculate folder size"), "Leertaste", Cmd::CalcSize, &mut out);
+            menu_item(ui, l!("Zu Favoriten hinzufügen", "Add to favourites"), "", Cmd::AddEntryToHotlist, &mut out);
         }
     }
     if local && !e.is_parent {
         ui.separator();
         if crate::archive::is_archive(&e.path) {
-            menu_item(ui, "Smart hier entpacken", "Alt+Shift+F9", Cmd::UnpackSmart, &mut out);
-            menu_item(ui, "Hier entpacken", "", Cmd::UnpackHere, &mut out);
-            menu_item(ui, "Entpacken nach…", "Alt+F9", Cmd::Unpack, &mut out);
+            menu_item(ui, l!("Smart hier entpacken", "Smart unpack here"), "Alt+Shift+F9", Cmd::UnpackSmart, &mut out);
+            menu_item(ui, l!("Hier entpacken", "Unpack here"), "", Cmd::UnpackHere, &mut out);
+            menu_item(ui, l!("Entpacken nach…", "Unpack to…"), "Alt+F9", Cmd::Unpack, &mut out);
         }
-        menu_item(ui, "Packen (ZIP, 7z, TAR …)…", "Alt+F5", Cmd::Pack, &mut out);
+        menu_item(ui, l!("Packen (ZIP, 7z, TAR …)…", "Pack (ZIP, 7z, TAR …)…"), "Alt+F5", Cmd::Pack, &mut out);
     }
     ui.separator();
     if !in_archive {
-        menu_item(ui, "Neuer Ordner", "F7", Cmd::Mkdir, &mut out);
+        menu_item(ui, l!("Neuer Ordner", "New folder"), "F7", Cmd::Mkdir, &mut out);
     }
     if local {
-        menu_item(ui, "Neue Datei", "Shift+F4", Cmd::NewFile, &mut out);
+        menu_item(ui, l!("Neue Datei", "New file"), "Shift+F4", Cmd::NewFile, &mut out);
     }
     ui.separator();
     if !e.is_parent {
-        menu_item(ui, "Pfad kopieren", "Strg+Shift+C", Cmd::CopyPaths, &mut out);
-        menu_item(ui, "Name kopieren", "Strg+Shift+N", Cmd::CopyNames, &mut out);
+        menu_item(ui, l!("Pfad kopieren", "Copy path"), "Strg+Shift+C", Cmd::CopyPaths, &mut out);
+        menu_item(ui, l!("Name kopieren", "Copy name"), "Strg+Shift+N", Cmd::CopyNames, &mut out);
     }
-    menu_item(ui, "Terminal hier öffnen", "F9", Cmd::Terminal, &mut out);
+    menu_item(ui, l!("Terminal hier öffnen", "Open terminal here"), "F9", Cmd::Terminal, &mut out);
     if !e.is_parent {
-        menu_item(ui, "Eigenschaften", "Alt+Enter", Cmd::Properties, &mut out);
+        menu_item(ui, l!("Eigenschaften", "Properties"), "Alt+Enter", Cmd::Properties, &mut out);
     }
     out
 }
@@ -1353,20 +1351,20 @@ fn folder_menu(ui: &mut egui::Ui, loc: &Location) -> Option<crate::app::Cmd> {
     let mut out = None;
     let local = loc.dir().is_some();
     ui.set_min_width(230.0);
-    menu_item(ui, "Einfügen", "Strg+V", Cmd::ClipPaste, &mut out);
+    menu_item(ui, l!("Einfügen", "Paste"), "Strg+V", Cmd::ClipPaste, &mut out);
     ui.separator();
     if !matches!(loc, Location::Archive { .. }) {
-        menu_item(ui, "Neuer Ordner", "F7", Cmd::Mkdir, &mut out);
+        menu_item(ui, l!("Neuer Ordner", "New folder"), "F7", Cmd::Mkdir, &mut out);
     }
     if local {
-        menu_item(ui, "Neue Datei", "Shift+F4", Cmd::NewFile, &mut out);
+        menu_item(ui, l!("Neue Datei", "New file"), "Shift+F4", Cmd::NewFile, &mut out);
     }
     ui.separator();
-    menu_item(ui, "Alles markieren", "Strg+A", Cmd::SelectAll, &mut out);
-    menu_item(ui, "Neu einlesen", "Strg+R", Cmd::Reload, &mut out);
+    menu_item(ui, l!("Alles markieren", "Select all"), "Strg+A", Cmd::SelectAll, &mut out);
+    menu_item(ui, l!("Neu einlesen", "Reload"), "Strg+R", Cmd::Reload, &mut out);
     if local {
-        menu_item(ui, "Zu Favoriten hinzufügen", "Strg+Shift+D", Cmd::AddHotlist, &mut out);
+        menu_item(ui, l!("Zu Favoriten hinzufügen", "Add to favourites"), "Strg+Shift+D", Cmd::AddHotlist, &mut out);
     }
-    menu_item(ui, "Terminal hier öffnen", "F9", Cmd::Terminal, &mut out);
+    menu_item(ui, l!("Terminal hier öffnen", "Open terminal here"), "F9", Cmd::Terminal, &mut out);
     out
 }

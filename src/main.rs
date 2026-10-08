@@ -1,3 +1,5 @@
+#[macro_use]
+mod i18n;
 mod app;
 mod archive;
 mod clip;

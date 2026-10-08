@@ -25,6 +25,7 @@ pub struct Config {
     pub theme: ThemeChoice,
     pub font_scale: f32,
     pub drive_bar: DriveBar,
+    pub language: crate::i18n::LangChoice,
     pub hotlist: Vec<PathBuf>,
     /// Saved FTP sites (passwords live in the OS keyring, never here).
     #[serde(alias = "ftp_sites")]
@@ -47,6 +48,7 @@ impl Default for Config {
             theme: ThemeChoice::System,
             font_scale: 1.0,
             drive_bar: DriveBar::Both,
+            language: crate::i18n::LangChoice::System,
             hotlist: Vec::new(),
             sites: Vec::new(),
             left_tabs: Vec::new(),

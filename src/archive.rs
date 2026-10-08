@@ -246,7 +246,7 @@ fn read_index(archive: &Path, kind: Kind) -> Result<Vec<Item>, String> {
 pub fn index(archive: &Path) -> Result<Arc<Vec<Item>>, String> {
     type Key = (PathBuf, Option<SystemTime>, u64);
     static CACHE: LazyLock<Mutex<HashMap<Key, Arc<Vec<Item>>>>> = LazyLock::new(Default::default);
-    let kind = kind_of(archive).ok_or_else(|| "Kein unterstütztes Archiv".to_string())?;
+    let kind = kind_of(archive).ok_or_else(|| l!("Kein unterstütztes Archiv", "Not a supported archive").to_string())?;
     let meta = std::fs::metadata(archive).map_err(|e| e.to_string())?;
     let key = (archive.to_path_buf(), meta.modified().ok(), meta.len());
     if let Some(v) = CACHE.lock().unwrap().get(&key) {
@@ -346,7 +346,7 @@ fn write_member(sink: &mut dyn Sink, item: &Item, data: &mut dyn Read) {
 
 /// Extract all members for which `wanted(path)` is true.
 pub fn extract(archive: &Path, wanted: &dyn Fn(&str) -> bool, sink: &mut dyn Sink) -> Result<(), String> {
-    let kind = kind_of(archive).ok_or_else(|| "Kein unterstütztes Archiv".to_string())?;
+    let kind = kind_of(archive).ok_or_else(|| l!("Kein unterstütztes Archiv", "Not a supported archive").to_string())?;
     let open = || File::open(archive).map_err(|e| e.to_string());
     match kind {
         Kind::Zip => {
@@ -500,7 +500,7 @@ pub fn pack<'a>(
     list: &PackList,
     read_file: &mut dyn FnMut(&Path) -> io::Result<Box<dyn Read + 'a>>,
 ) -> Result<(), String> {
-    let kind = kind_of(dest).ok_or_else(|| "Unbekanntes Format – Endung .zip, .7z, .tar, .tar.gz, .tar.xz, .tar.bz2 oder .tar.zst".to_string())?;
+    let kind = kind_of(dest).ok_or_else(|| l!("Unbekanntes Format – Endung .zip, .7z, .tar, .tar.gz, .tar.xz, .tar.bz2 oder .tar.zst", "Unknown format – use .zip, .7z, .tar, .tar.gz, .tar.xz, .tar.bz2 or .tar.zst").to_string())?;
     let out = File::create(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     match kind {
         Kind::Zip => {
@@ -552,8 +552,8 @@ pub fn pack<'a>(
             }
             sz.finish().map_err(|e| e.to_string())?;
         }
-        Kind::Rar => return Err("RAR-Archive können nur gelesen werden – bitte .zip oder .7z wählen".into()),
-        Kind::Single(_) => return Err("Bitte ein Archivformat wählen (.zip, .7z, .tar.gz …)".into()),
+        Kind::Rar => return Err(l!("RAR-Archive können nur gelesen werden – bitte .zip oder .7z wählen", "RAR archives can only be read – please choose .zip or .7z").into()),
+        Kind::Single(_) => return Err(l!("Bitte ein Archivformat wählen (.zip, .7z, .tar.gz …)", "Please choose an archive format (.zip, .7z, .tar.gz …)").into()),
     }
     Ok(())
 }

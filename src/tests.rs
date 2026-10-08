@@ -1282,11 +1282,14 @@ fn website_screenshots() {
         for _ in 0..3 {
             h.step();
         }
-        h.render().unwrap().save(out.join(name)).unwrap();
+        let name = if crate::i18n::en() { name.replace(".png", "-en.png") } else { name.to_string() };
+        h.render().unwrap().save(out.join(&name)).unwrap();
         eprintln!("saved {name}");
     };
-    let new = || {
+    let new = |english: bool| {
         let mut h = Harness::builder().with_size([1280.0, 760.0]).build_eframe(|cc| MieryApp::new(cc));
+        h.state_mut().cfg.language =
+            if english { crate::i18n::LangChoice::English } else { crate::i18n::LangChoice::German };
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(40)); // fonts + drive scan in the background
             h.step();
@@ -1294,50 +1297,85 @@ fn website_screenshots() {
         h
     };
 
-    // 1. Main window: Dokumente | Backup/Dokumente, some marked.
-    let mut h = new();
-    setup(&mut h, &demo.join("Dokumente"), &demo);
-    h.state_mut().active().tab_mut().marked.extend(["Rechnung-0815.pdf".to_string(), "Präsentation.pptx".to_string()]);
-    select(&mut h, "Bericht 2026.docx");
-    shot(&mut h, "main.png");
+    for english in [false, true] {
+        // 1. Main window: Dokumente | Backup/Dokumente, some marked.
+        let mut h = new(english);
+        setup(&mut h, &demo.join("Dokumente"), &demo);
+        h.state_mut().active().tab_mut().marked.extend(["Rechnung-0815.pdf".to_string(), "Präsentation.pptx".to_string()]);
+        select(&mut h, "Bericht 2026.docx");
+        shot(&mut h, "main.png");
 
-    // 2. Context menu on a file.
-    h.get_by_label_contains("Bericht 2026").click_secondary();
-    shot(&mut h, "context-menu.png");
-    h.key_press(Key::Escape);
-    steps(&mut h, 2);
+        // 2. Context menu on a file.
+        h.get_by_label_contains("Bericht 2026").click_secondary();
+        shot(&mut h, "context-menu.png");
+        h.key_press(Key::Escape);
+        steps(&mut h, 2);
 
-    // 3. Compare two versions of a file.
-    h.state_mut().right.tab_mut().navigate(Location::Dir(demo.join("Backup/Dokumente")), false, true);
-    steps(&mut h, 2);
-    select(&mut h, "Notizen.md");
-    h.state_mut().right.tab_mut().select_name("Notizen.md");
-    h.state_mut().active().tab_mut().marked.clear();
-    let ctx = h.ctx.clone();
-    h.state_mut().run(crate::app::Cmd::CompareFiles, &ctx);
-    wait_until(&mut h, "compare", |a| a.compares.last().is_some_and(|c| c.outcome().is_some()));
-    shot(&mut h, "compare.png");
-    h.state_mut().compares.clear();
+        // 3. Compare two versions of a file.
+        h.state_mut().right.tab_mut().navigate(Location::Dir(demo.join("Backup/Dokumente")), false, true);
+        steps(&mut h, 2);
+        select(&mut h, "Notizen.md");
+        h.state_mut().right.tab_mut().select_name("Notizen.md");
+        h.state_mut().active().tab_mut().marked.clear();
+        let ctx = h.ctx.clone();
+        h.state_mut().run(crate::app::Cmd::CompareFiles, &ctx);
+        wait_until(&mut h, "compare", |a| a.compares.last().is_some_and(|c| c.outcome().is_some()));
+        shot(&mut h, "compare.png");
+        h.state_mut().compares.clear();
 
-    // 4. Synchronize Dokumente ↔ Backup/Dokumente.
-    h.state_mut().run(crate::app::Cmd::SyncDirs, &ctx);
-    wait_until(&mut h, "sync", |a| !a.sync.is_scanning());
-    shot(&mut h, "sync.png");
-    h.state_mut().sync.open = false;
+        // 4. Synchronize Dokumente ↔ Backup/Dokumente.
+        h.state_mut().run(crate::app::Cmd::SyncDirs, &ctx);
+        wait_until(&mut h, "sync", |a| !a.sync.is_scanning());
+        shot(&mut h, "sync.png");
+        h.state_mut().sync.open = false;
 
-    // 5. Inside an archive + quick view.
-    let mut h = new();
-    setup(&mut h, &demo, &demo.join("Fotos/Urlaub 2024"));
-    select(&mut h, "Archiv.zip");
-    panel_key(&mut h, Key::Enter, Modifiers::NONE);
-    shot(&mut h, "archive.png");
+        // 5. Inside an archive + quick view.
+        let mut h = new(english);
+        setup(&mut h, &demo, &demo.join("Fotos/Urlaub 2024"));
+        select(&mut h, "Archiv.zip");
+        panel_key(&mut h, Key::Enter, Modifiers::NONE);
+        shot(&mut h, "archive.png");
 
-    // 6. Connect dialog (SFTP).
-    panel_key(&mut h, Key::F, Modifiers::COMMAND);
-    if let Some(Dialog::FtpConnect(f)) = &mut h.state_mut().dialog {
-        f.site = Site { protocol: Protocol::Sftp, name: "Mein NAS".into(), host: "nas.local".into(), port: 22, user: "anna".into(), remote_dir: "/mnt/tank".into(), ..Default::default() };
+        // 6. Connect dialog (SFTP).
+        panel_key(&mut h, Key::F, Modifiers::COMMAND);
+        if let Some(Dialog::FtpConnect(f)) = &mut h.state_mut().dialog {
+            f.site = Site { protocol: Protocol::Sftp, name: "Mein NAS".into(), host: "nas.local".into(), port: 22, user: "anna".into(), remote_dir: "/mnt/tank".into(), ..Default::default() };
+        }
+        shot(&mut h, "connect.png");
     }
-    shot(&mut h, "connect.png");
     *crate::fsutil::PLACES_OVERRIDE.lock().unwrap() = None;
     let _ = fs::remove_dir_all(&demo);
+}
+
+#[test]
+fn english_user_interface() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("report.txt"), vec![b'x'; 1_234_567]).unwrap();
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    // Switch the language in the settings like a user would.
+    panel_key(&mut h, Key::Comma, Modifiers::COMMAND);
+    h.get_by_label("English").click();
+    steps(&mut h, 2);
+    assert_eq!(h.state().cfg.language, crate::i18n::LangChoice::English);
+    h.key_press(Key::Escape);
+    steps(&mut h, 3);
+
+    for label in ["Files", "Commands", "F5 Copy", "F8 Delete", "Exit", "Size", "Date"] {
+        assert!(h.query_all_by_label(label).next().is_some(), "English label {label:?} missing");
+    }
+    assert!(h.query_all_by_label("F5 Kopieren").next().is_none(), "German text left over");
+    // English number and date formats.
+    assert!(h.query_all_by_label("1,234,567").next().is_some(), "thousands separator");
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(h.query_all_by_label_contains(&today).next().is_some(), "ISO date");
+    // Context menu with English shortcuts.
+    h.get_by_label_contains("report").click_secondary();
+    steps(&mut h, 2);
+    assert!(h.query_by_label("Copy Ctrl+C").is_some());
+    assert!(h.query_by_label("Move to trash F8").is_some());
+    if let Ok(out) = std::env::var("MIERY_SHOT") {
+        h.render().unwrap().save(out).unwrap();
+    }
 }

@@ -73,17 +73,17 @@ fn url_with_password(host: &str, share: &str, user: &str, password: &str) -> Str
 /// never on a command line where other processes could see it.
 pub fn mount(host: &str, share: &str, user: &str, password: &str) -> Result<PathBuf, String> {
     if host.trim().is_empty() {
-        return Err("Kein Server angegeben".into());
+        return Err(l!("Kein Server angegeben", "No server given").into());
     }
     if !password.is_empty() && (user.trim().is_empty() || user.trim() == "anonymous") {
-        return Err("Für ein Passwort bitte auch den Benutzer angeben".into());
+        return Err(l!("Für ein Passwort bitte auch den Benutzer angeben", "Please also enter the user for a password").into());
     }
     #[cfg(target_os = "linux")]
     {
         match kio_fuse(&url_with_password(host, share, user, password), password) {
             Ok(p) => Ok(p),
             Err(kio_err) => gio_mount(&url(host, share, user), host, share, user, password).map_err(|gio_err| {
-                format!("SMB konnte nicht eingebunden werden.\nKDE (kio-fuse): {kio_err}\nGNOME (gio): {gio_err}")
+                lf!("SMB konnte nicht eingebunden werden.\nKDE (kio-fuse): {kio_err}\nGNOME (gio): {gio_err}", "Could not mount the SMB share.\nKDE (kio-fuse): {kio_err}\nGNOME (gio): {gio_err}")
             }),
         }
     }
@@ -94,7 +94,7 @@ pub fn mount(host: &str, share: &str, user: &str, password: &str) -> Result<Path
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = url;
-        Err("SMB wird auf diesem System nicht unterstützt".into())
+        Err(l!("SMB wird auf diesem System nicht unterstützt", "SMB is not supported on this system").into())
     }
 }
 
@@ -102,7 +102,7 @@ pub fn mount(host: &str, share: &str, user: &str, password: &str) -> Result<Path
 fn check_no_password(path: &Path, password: &str) -> Result<(), String> {
     let p = path.to_string_lossy();
     if password.len() >= 2 && (p.contains(password) || p.contains(&encode_userinfo(password))) {
-        return Err("Abgebrochen: Das System hätte das Passwort im Ordnerpfad angezeigt".into());
+        return Err(l!("Abgebrochen: Das System hätte das Passwort im Ordnerpfad angezeigt", "Cancelled: the system would have shown the password in the folder path").into());
     }
     Ok(())
 }
@@ -122,7 +122,7 @@ fn kio_fuse(url: &str, password: &str) -> Result<PathBuf, String> {
             zbus::Error::MethodError(name, msg, _) => {
                 let msg = msg.unwrap_or_default();
                 if name.as_str().contains("ServiceUnknown") {
-                    "kio-fuse ist nicht installiert".to_string()
+                    l!("kio-fuse ist nicht installiert", "kio-fuse is not installed").to_string()
                 } else if msg.is_empty() {
                     name.to_string()
                 } else {
@@ -155,7 +155,7 @@ fn gio_mount(url: &str, host: &str, share: &str, user: &str, password: &str) -> 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("gio nicht verfügbar ({e})"))?;
+        .map_err(|e| lf!("gio nicht verfügbar ({e})", "gio not available ({e})"))?;
     if let Some(mut stdin) = child.stdin.take() {
         // Only answer with a password if we have one; otherwise gio uses the keyring.
         let answers = if password.is_empty() { String::new() } else { gio_answers(user, password) };
@@ -180,7 +180,7 @@ fn gio_mount(url: &str, host: &str, share: &str, user: &str, password: &str) -> 
         .flatten()
         .map(|e| e.path())
         .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with(&wanted)))
-        .ok_or_else(|| "Eingebundene Freigabe nicht gefunden".to_string())
+        .ok_or_else(|| l!("Eingebundene Freigabe nicht gefunden", "Mounted share not found").to_string())
 }
 
 /// AppleScript string literal.

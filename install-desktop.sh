@@ -29,12 +29,14 @@ cat > "$data/applications/miery-commander.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=MieryCommander
-GenericName=Dateimanager
+GenericName=File manager
+GenericName[de]=Dateimanager
 Exec="$bin" %f
 Icon=miery-commander
 Terminal=false
 Categories=System;FileTools;FileManager;
-Keywords=Dateien;Dateimanager;Commander;FTP;SFTP;SMB;
+Keywords=files;file manager;commander;FTP;SFTP;SMB;
+Keywords[de]=Dateien;Dateimanager;Commander;FTP;SFTP;SMB;
 StartupWMClass=miery-commander
 StartupNotify=true
 EOF

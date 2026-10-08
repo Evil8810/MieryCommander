@@ -151,7 +151,7 @@ impl Content {
     pub fn info(&self) -> String {
         let mut s = format!("{}  ·  {}", self.path.to_string_lossy(), fsutil::format_size_short(self.size));
         if self.truncated {
-            s.push_str(&format!("  ·  nur erste {} angezeigt", fsutil::format_size_short(MAX_BYTES)));
+            s.push_str(&lf!("  ·  nur erste {} angezeigt", "  ·  only first {} shown", fsutil::format_size_short(MAX_BYTES)));
         }
         s
     }
@@ -178,8 +178,7 @@ impl Loading {
     fn spinner(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(format!(
-                "Lade {} … {:.0} s",
+            ui.label(lf!("Lade {} … {:.0} s", "Loading {} … {:.0} s",
                 self.path.file_name().unwrap_or_default().to_string_lossy(),
                 self.since.elapsed().as_secs_f32().floor()
             ));
@@ -236,9 +235,9 @@ impl Viewer {
                     if content.mode != Mode::Image {
                         ui.selectable_value(&mut content.mode, Mode::Text, "Text (1)");
                         ui.selectable_value(&mut content.mode, Mode::Hex, "Hex (3)");
-                        ui.checkbox(&mut self.wrap, "Umbruch (W)");
+                        ui.checkbox(&mut self.wrap, l!("Umbruch (W)", "Wrap (W)"));
                     }
-                    if ui.button("Extern öffnen").clicked() {
+                    if ui.button(l!("Extern öffnen", "Open externally")).clicked() {
                         let _ = fsutil::open_default(&content.path);
                     }
                     ui.label(RichText::new(content.info()).small());
@@ -261,14 +260,14 @@ impl QuickView {
     pub fn show(&mut self, ui: &mut egui::Ui, target: Option<&Path>, is_dir_info: Option<String>) {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            ui.strong("Schnellansicht (Strg+Q)");
+            ui.strong(l!("Schnellansicht (Strg+Q)", "Quick view (Ctrl+Q)"));
             ui.separator();
             if let Some(info) = is_dir_info {
                 ui.label(info);
                 return;
             }
             let Some(path) = target else {
-                ui.label("Keine Datei ausgewählt");
+                ui.label(l!("Keine Datei ausgewählt", "No file selected"));
                 return;
             };
             if let Some(l) = &self.loading

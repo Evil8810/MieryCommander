@@ -249,8 +249,7 @@ impl CompareWindow {
             }
             self.outcome = Some(o);
         }
-        let title = format!(
-            "Vergleich – {} ↔ {}",
+        let title = lf!("Vergleich – {} ↔ {}", "Compare – {} ↔ {}",
             self.a.file_name().unwrap_or_default().to_string_lossy(),
             self.b.file_name().unwrap_or_default().to_string_lossy()
         );
@@ -265,26 +264,26 @@ impl CompareWindow {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("◀ Vorige").on_hover_text("Vorige Änderung (P)").clicked() {
+                    if ui.button(l!("◀ Vorige", "◀ Previous")).on_hover_text(l!("Vorige Änderung (P)", "Previous change (P)")).clicked() {
                         jump = -1;
                     }
-                    if ui.button("Nächste ▶").on_hover_text("Nächste Änderung (N)").clicked() {
+                    if ui.button(l!("Nächste ▶", "Next ▶")).on_hover_text(l!("Nächste Änderung (N)", "Next change (N)")).clicked() {
                         jump = 1;
                     }
-                    ui.checkbox(&mut self.only_diffs, "Nur Unterschiede");
-                    if ui.button("🔄 Neu vergleichen").clicked() {
+                    ui.checkbox(&mut self.only_diffs, l!("Nur Unterschiede", "Differences only"));
+                    if ui.button(l!("🔄 Neu vergleichen", "🔄 Compare again")).clicked() {
                         rerun = true;
                     }
-                    if ui.button("Links bearbeiten").clicked() {
+                    if ui.button(l!("Links bearbeiten", "Edit left")).clicked() {
                         let _ = fsutil::open_with(editor, &self.a);
                     }
-                    if ui.button("Rechts bearbeiten").clicked() {
+                    if ui.button(l!("Rechts bearbeiten", "Edit right")).clicked() {
                         let _ = fsutil::open_with(editor, &self.b);
                     }
                     let summary = match &self.outcome {
-                        Some(Outcome::Text { changes, .. }) if changes.is_empty() => "✔ Inhalt identisch".to_string(),
+                        Some(Outcome::Text { changes, .. }) if changes.is_empty() => l!("✔ Inhalt identisch", "✔ Content identical").to_string(),
                         Some(Outcome::Text { changes, .. }) => {
-                            format!("{} Unterschied(e) · {} / {}", changes.len(), self.current + 1, changes.len())
+                            lf!("{} Unterschied(e) · {} / {}", "{} difference(s) · {} / {}", changes.len(), self.current + 1, changes.len())
                         }
                         _ => String::new(),
                     };
@@ -299,7 +298,7 @@ impl CompareWindow {
                     None => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(format!("Vergleiche… {:.0} s", self.since.elapsed().as_secs_f32().floor()));
+                            ui.label(lf!("Vergleiche… {:.0} s", "Comparing… {:.0} s", self.since.elapsed().as_secs_f32().floor()));
                         });
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                     }
@@ -307,15 +306,14 @@ impl CompareWindow {
                         ui.colored_label(Color32::from_rgb(200, 60, 60), e);
                     }
                     Some(Outcome::Binary { size_a, size_b, first_diff }) => {
-                        ui.label("Binärdateien (oder sehr groß) – byteweiser Vergleich:");
-                        ui.label(format!(
-                            "Links: {} Bytes · Rechts: {} Bytes",
+                        ui.label(l!("Binärdateien (oder sehr groß) – byteweiser Vergleich:", "Binary files (or very large) – byte-by-byte comparison:"));
+                        ui.label(lf!("Links: {} Bytes · Rechts: {} Bytes", "Left: {} bytes · Right: {} bytes",
                             fsutil::format_size(*size_a),
                             fsutil::format_size(*size_b)
                         ));
                         match first_diff {
-                            None => ui.strong("✔ Inhalt identisch"),
-                            Some(o) => ui.strong(format!("✖ Unterschiedlich ab Byte {} (0x{o:X})", fsutil::format_size(*o))),
+                            None => ui.strong(l!("✔ Inhalt identisch", "✔ Content identical")),
+                            Some(o) => ui.strong(lf!("✖ Unterschiedlich ab Byte {} (0x{o:X})", "✖ Different from byte {} (0x{o:X})", fsutil::format_size(*o))),
                         };
                     }
                     Some(Outcome::Text { rows, .. }) => {

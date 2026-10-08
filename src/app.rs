@@ -128,6 +128,7 @@ pub struct MieryApp {
     pub ftp_edits: Vec<FtpEdit>,
     pub(crate) ftp_ops: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     startup_frames: u8,
+    applied_language: Option<crate::i18n::LangChoice>,
     /// SMB share being made available (kio-fuse / gio / Finder).
     pub smb_mounting: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
     /// Files copied/cut with Ctrl+C / Ctrl+X.
@@ -189,6 +190,7 @@ impl MieryApp {
             ftp_ops: Vec::new(),
             ftp_connecting: None,
             startup_frames: 0,
+            applied_language: None,
             smb_mounting: None,
             clip: None,
         }
@@ -246,7 +248,7 @@ impl MieryApp {
 
     pub fn start_job(&mut self, kind: JobKind, sources: Vec<PathBuf>, dest: PathBuf, ctx: &egui::Context) {
         if self.job.is_some() {
-            self.notify("Es läuft bereits eine Operation", true);
+            self.notify(l!("Es läuft bereits eine Operation", "Another operation is already running"), true);
             return;
         }
         self.job = Some(Job::start(kind, sources, dest, ctx.clone()));
@@ -305,7 +307,7 @@ impl MieryApp {
                     Cmd::View => AfterJob::View(local),
                     _ => {
                         if cmd == Cmd::Edit {
-                            self.notify("Bearbeitet wird eine Kopie – Änderungen landen nicht im Archiv", false);
+                            self.notify(l!("Bearbeitet wird eine Kopie – Änderungen landen nicht im Archiv", "You are editing a copy – changes are not saved into the archive"), false);
                         }
                         AfterJob::Open(local)
                     }
@@ -367,7 +369,7 @@ impl MieryApp {
             }
             Cmd::Delete | Cmd::DeletePermanent => {
                 if in_archive {
-                    self.notify("Löschen in Archiven wird nicht unterstützt", true);
+                    self.notify(l!("Löschen in Archiven wird nicht unterstützt", "Deleting inside archives is not supported"), true);
                     return;
                 }
                 let sel = self.active_ref().tab().selection();
@@ -389,7 +391,7 @@ impl MieryApp {
             }
             Cmd::Pack => {
                 if !local {
-                    self.notify("Packen geht nur in lokalen Ordnern", true);
+                    self.notify(l!("Packen geht nur in lokalen Ordnern", "Packing only works in local folders"), true);
                     return;
                 }
                 let sel = self.active_ref().tab().selection();
@@ -418,7 +420,7 @@ impl MieryApp {
                     .map(|e| e.path)
                     .collect();
                 if !local || archives.is_empty() {
-                    self.notify("Bitte ein Archiv auswählen (zip, 7z, rar, tar.gz …)", true);
+                    self.notify(l!("Bitte ein Archiv auswählen (zip, 7z, rar, tar.gz …)", "Please select an archive (zip, 7z, rar, tar.gz …)"), true);
                     return;
                 }
                 let here = self.active_dir();
@@ -439,7 +441,7 @@ impl MieryApp {
             }
             Cmd::MultiRename => {
                 if !local {
-                    self.notify("Mehrfach-Umbenennen geht nur in lokalen Ordnern", true);
+                    self.notify(l!("Mehrfach-Umbenennen geht nur in lokalen Ordnern", "Multi-rename only works in local folders"), true);
                     return;
                 }
                 let files: Vec<(PathBuf, bool)> =
@@ -487,7 +489,7 @@ impl MieryApp {
                     let (l, r) = (l.to_path_buf(), r.to_path_buf());
                     self.sync.open_with(&l, &r);
                 }
-                _ => self.notify("Synchronisieren geht nur zwischen zwei lokalen Ordnern (auch eingebundene Netzlaufwerke)", true),
+                _ => self.notify(l!("Synchronisieren geht nur zwischen zwei lokalen Ordnern (auch eingebundene Netzlaufwerke)", "Synchronizing only works between two local folders (mounted network drives included)"), true),
             },
             Cmd::CompareFiles => match self.compare_pair() {
                 Ok((a, b)) => {
@@ -498,7 +500,7 @@ impl MieryApp {
             },
             Cmd::BranchView => {
                 if !local {
-                    self.notify("Branch-View gibt es nur für lokale Ordner", true);
+                    self.notify(l!("Branch-View gibt es nur für lokale Ordner", "Branch view is only available for local folders"), true);
                     return;
                 }
                 let t = self.active().tab_mut();
@@ -520,7 +522,7 @@ impl MieryApp {
                 if !self.cfg.hotlist.contains(&dir) {
                     self.cfg.hotlist.push(dir.clone());
                 }
-                self.notify(format!("Zu Favoriten hinzugefügt: {}", dir.to_string_lossy()), false);
+                self.notify(lf!("Zu Favoriten hinzugefügt: {}", "Added to favourites: {}", dir.to_string_lossy()), false);
             }
             Cmd::History => self.open_dialog(Dialog::History),
             Cmd::Back => self.active().tab_mut().go_back(h, d),
@@ -551,7 +553,7 @@ impl MieryApp {
                     })
                     .collect();
                 ctx.copy_text(text.join("\n"));
-                self.notify(format!("{} Eintrag/Einträge in die Zwischenablage kopiert", sel.len()), false);
+                self.notify(lf!("{} Eintrag/Einträge in die Zwischenablage kopiert", "{} item(s) copied to the clipboard", sel.len()), false);
             }
             Cmd::SelectAll => self.active().tab_mut().mark_all(true),
             Cmd::DeselectAll => self.active().tab_mut().mark_all(false),
@@ -581,9 +583,8 @@ impl MieryApp {
             }
             Cmd::Keys => self.open_dialog(Dialog::Keys),
             Cmd::About => self.open_dialog(Dialog::Message {
-                title: "Über MieryCommander".into(),
-                text: format!(
-                    "MieryCommander {}\nEin schneller, zweispaltiger Dateimanager.\nGeschrieben in Rust mit egui – für Linux und macOS.",
+                title: l!("Über MieryCommander", "About MieryCommander").into(),
+                text: lf!("MieryCommander {}\nEin schneller, zweispaltiger Dateimanager.\nGeschrieben in Rust mit egui – für Linux und macOS.", "MieryCommander {}\nA fast, dual-pane file manager.\nWritten in Rust with egui – for Linux and macOS.",
                     env!("CARGO_PKG_VERSION")
                 ),
             }),
@@ -644,15 +645,15 @@ impl MieryApp {
                             if !self.cfg.hotlist.iter().any(|x| x == dir) {
                                 self.cfg.hotlist.push(dir.to_path_buf());
                             }
-                            self.notify(format!("Zu Favoriten hinzugefügt: {}", dir.display()), false);
+                            self.notify(lf!("Zu Favoriten hinzugefügt: {}", "Added to favourites: {}", dir.display()), false);
                         }
-                        None => self.notify("Nur lokale Ordner können Favoriten sein", true),
+                        None => self.notify(l!("Nur lokale Ordner können Favoriten sein", "Only local folders can be favourites"), true),
                     },
                 }
             }
             Cmd::FtpDisconnect => match remote {
                 Some(id) => self.ftp_disconnect(id),
-                None => self.notify("Das aktive Panel ist mit keinem Server verbunden", true),
+                None => self.notify(l!("Das aktive Panel ist mit keinem Server verbunden", "The active panel is not connected to a server"), true),
             },
         }
     }
@@ -660,10 +661,10 @@ impl MieryApp {
     /// Which two files to compare: two marked files in the active panel, or
     /// the file under the cursor in each panel.
     fn compare_pair(&self) -> Result<(PathBuf, PathBuf), String> {
-        let hint = "Bitte zwei Dateien markieren oder in beiden Panels je eine Datei auswählen";
+        let hint = l!("Bitte zwei Dateien markieren oder in beiden Panels je eine Datei auswählen", "Please mark two files or select one file in each panel");
         let act = self.active_ref().tab();
         if act.loc.dir().is_none() {
-            return Err("Vergleichen geht nur mit lokalen Dateien".into());
+            return Err(l!("Vergleichen geht nur mit lokalen Dateien", "Comparing only works with local files").into());
         }
         let marked: Vec<PathBuf> =
             act.entries.iter().filter(|e| act.marked.contains(&e.name) && !e.is_dir).map(|e| e.path.clone()).collect();
@@ -692,7 +693,7 @@ impl MieryApp {
             Location::Ftp { id, .. } => crate::clip::ClipSource::Remote(*id),
             Location::Archive { file, inner } => {
                 if cut {
-                    self.notify("Aus Archiven kann nur kopiert werden", true);
+                    self.notify(l!("Aus Archiven kann nur kopiert werden", "Archives can only be copied from"), true);
                     return;
                 }
                 crate::clip::ClipSource::Archive { file: file.clone(), inner: inner.clone() }
@@ -707,7 +708,7 @@ impl MieryApp {
         self.clip = Some(crate::clip::FileClip { paths, dirs, cut, source });
         self.active().tab_mut().marked.clear();
         self.notify(
-            format!("{n} Element(e) {} – mit Strg+V einfügen", if cut { "ausgeschnitten" } else { "kopiert" }),
+            lf!("{n} Element(e) {} – mit Strg+V einfügen", "{n} item(s) {} – paste with Ctrl+V", if cut { l!("ausgeschnitten", "cut") } else { l!("kopiert", "copied") }),
             false,
         );
     }
@@ -732,7 +733,7 @@ impl MieryApp {
             (_, mine) => mine,
         };
         let Some(clip) = clip else {
-            self.notify("Die Zwischenablage enthält keine Dateien", true);
+            self.notify(l!("Die Zwischenablage enthält keine Dateien", "The clipboard contains no files"), true);
             return;
         };
         let target = self.active_ref().tab().loc.clone();
@@ -740,7 +741,7 @@ impl MieryApp {
             (ClipSource::Local, Location::Dir(dir)) => {
                 let same_dir = clip.paths.iter().all(|p| p.parent() == Some(dir.as_path()));
                 if clip.cut && same_dir {
-                    self.notify("Die Dateien liegen bereits in diesem Ordner", false);
+                    self.notify(l!("Die Dateien liegen bereits in diesem Ordner", "The files are already in this folder"), false);
                     return;
                 }
                 let kind = if clip.cut { JobKind::Move } else { JobKind::Copy };
@@ -760,16 +761,16 @@ impl MieryApp {
                 (JobKind::Extract { archive: file.clone(), base: inner.clone() }, dir.clone(), None)
             }
             (_, Location::Archive { .. }) => {
-                self.notify("In Archive einfügen geht nicht – bitte Alt+F5 (Packen) nutzen", true);
+                self.notify(l!("In Archive einfügen geht nicht – bitte Alt+F5 (Packen) nutzen", "Cannot paste into archives – please use Alt+F5 (Pack)"), true);
                 return;
             }
             _ => {
-                self.notify("Einfügen zwischen zwei Servern wird nicht unterstützt", true);
+                self.notify(l!("Einfügen zwischen zwei Servern wird nicht unterstützt", "Pasting between two servers is not supported"), true);
                 return;
             }
         };
         if self.job.is_some() {
-            self.notify("Es läuft bereits eine Operation", true);
+            self.notify(l!("Es läuft bereits eine Operation", "Another operation is already running"), true);
             return;
         }
         self.job = Some(crate::ops::Job::start_with_policy(kind, clip.paths.clone(), dest, ctx.clone(), policy));
@@ -787,7 +788,7 @@ impl MieryApp {
                 t.navigate(Location::Dir(home.clone()), h, d);
             }
         }
-        self.notify("Verbindung getrennt", false);
+        self.notify(l!("Verbindung getrennt", "Disconnected"), false);
     }
 
     /// Run a small FTP operation (mkdir, rename, …) off the UI thread.
@@ -826,7 +827,7 @@ impl MieryApp {
                     self.ftp_connecting = None;
                     self.dialog = None;
                     self.navigate_active(Location::Ftp { id: conn.id(), path: conn.home().to_string() });
-                    self.notify(format!("Verbunden mit {}", conn.url()), false);
+                    self.notify(lf!("Verbunden mit {}", "Connected to {}", conn.url()), false);
                 }
                 Ok(Err(e)) => {
                     self.ftp_connecting = None;
@@ -854,7 +855,7 @@ impl MieryApp {
                 Ok(Ok(path)) => {
                     self.smb_mounting = None;
                     self.dialog = None;
-                    self.notify(format!("SMB-Freigabe eingebunden: {}", path.display()), false);
+                    self.notify(lf!("SMB-Freigabe eingebunden: {}", "SMB share mounted: {}", path.display()), false);
                     self.navigate_active(Location::Dir(path));
                 }
                 Ok(Err(e)) => {
@@ -941,7 +942,7 @@ impl MieryApp {
         };
         let dialog = match (&tab.loc, &other_loc) {
             (Location::Archive { .. }, _) if is_move => {
-                self.notify("Verschieben aus Archiven wird nicht unterstützt – nutze F5", true);
+                self.notify(l!("Verschieben aus Archiven wird nicht unterstützt – nutze F5", "Moving out of archives is not supported – use F5"), true);
                 return;
             }
             (Location::Archive { file, inner }, Location::Dir(dest)) => Dialog::CopyMove {
@@ -952,7 +953,7 @@ impl MieryApp {
             },
             (Location::Dir(dir), _) if cmd == Cmd::CopySameDir => {
                 if sel.len() != 1 {
-                    self.notify("Kopieren im selben Ordner geht nur mit einer Datei", true);
+                    self.notify(l!("Kopieren im selben Ordner geht nur mit einer Datei", "Copying within the same folder only works with one file"), true);
                     return;
                 }
                 let target = fsutil::unique_name(dir, &sel[0].name).to_string_lossy().into_owned();
@@ -977,11 +978,11 @@ impl MieryApp {
                 mode: CopyMode::Download { conn: *id, dirs },
             },
             (Location::Dir(_), Location::Archive { .. }) => {
-                self.notify("Kopieren in ein Archiv: bitte Alt+F5 (Packen) nutzen", true);
+                self.notify(l!("Kopieren in ein Archiv: bitte Alt+F5 (Packen) nutzen", "Copying into an archive: please use Alt+F5 (Pack)"), true);
                 return;
             }
             _ => {
-                self.notify("Diese Kombination wird nicht unterstützt (FTP ↔ lokaler Ordner geht)", true);
+                self.notify(l!("Diese Kombination wird nicht unterstützt (FTP ↔ lokaler Ordner geht)", "This combination is not supported (FTP ↔ local folder works)"), true);
                 return;
             }
         };
@@ -992,7 +993,7 @@ impl MieryApp {
     fn compare_dirs(&mut self) {
         use std::collections::HashMap;
         let (Some(_), Some(_)) = (self.left.tab().loc.dir(), self.right.tab().loc.dir()) else {
-            self.notify("Vergleich nur zwischen echten Ordnern möglich", true);
+            self.notify(l!("Vergleich nur zwischen echten Ordnern möglich", "Comparing only works between real folders"), true);
             return;
         };
         let index = |p: &Panel| -> HashMap<String, (u64, Option<std::time::SystemTime>)> {
@@ -1027,7 +1028,7 @@ impl MieryApp {
             }
         }
         self.notify(
-            format!("Vergleich: links {} / rechts {} Datei(en) fehlen oder sind neuer – markiert", counts[0], counts[1]),
+            lf!("Vergleich: links {} / rechts {} Datei(en) fehlen oder sind neuer – markiert", "Compare: left {} / right {} file(s) missing or newer – marked", counts[0], counts[1]),
             false,
         );
     }
@@ -1295,78 +1296,78 @@ impl MieryApp {
         let mut cmd = None;
         egui::MenuBar::new().ui(ui, |ui| {
             let mut item = |ui: &mut egui::Ui, label: &str, sc: &str, c: Cmd| {
-                if ui.add(egui::Button::new(label).shortcut_text(sc)).clicked() {
+                if ui.add(egui::Button::new(label).shortcut_text(crate::i18n::keys(sc))).clicked() {
                     cmd = Some(c);
                     ui.close();
                 }
             };
-            ui.menu_button("Dateien", |ui| {
-                item(ui, "Ansehen", "F3", Cmd::View);
-                item(ui, "Bearbeiten", "F4", Cmd::Edit);
-                item(ui, "Neue Datei", "Shift+F4", Cmd::NewFile);
-                item(ui, "Öffnen mit Standardprogramm", "", Cmd::OpenDefault);
+            ui.menu_button(l!("Dateien", "Files"), |ui| {
+                item(ui, l!("Ansehen", "View"), "F3", Cmd::View);
+                item(ui, l!("Bearbeiten", "Edit"), "F4", Cmd::Edit);
+                item(ui, l!("Neue Datei", "New file"), "Shift+F4", Cmd::NewFile);
+                item(ui, l!("Öffnen mit Standardprogramm", "Open with default application"), "", Cmd::OpenDefault);
                 ui.separator();
-                item(ui, "Ausschneiden", "Strg+X", Cmd::ClipCut);
-                item(ui, "In Zwischenablage kopieren", "Strg+C", Cmd::ClipCopy);
-                item(ui, "Einfügen", "Strg+V", Cmd::ClipPaste);
+                item(ui, l!("Ausschneiden", "Cut"), "Strg+X", Cmd::ClipCut);
+                item(ui, l!("In Zwischenablage kopieren", "Copy to clipboard"), "Strg+C", Cmd::ClipCopy);
+                item(ui, l!("Einfügen", "Paste"), "Strg+V", Cmd::ClipPaste);
                 ui.separator();
-                item(ui, "Kopieren nach…", "F5", Cmd::Copy);
-                item(ui, "Verschieben nach…", "F6", Cmd::Move);
-                item(ui, "Umbenennen", "Shift+F6", Cmd::Rename);
-                item(ui, "Mehrfach-Umbenennen", "Strg+M", Cmd::MultiRename);
-                item(ui, "Löschen (Papierkorb)", "F8", Cmd::Delete);
-                item(ui, "Endgültig löschen", "Shift+F8", Cmd::DeletePermanent);
+                item(ui, l!("Kopieren nach…", "Copy to…"), "F5", Cmd::Copy);
+                item(ui, l!("Verschieben nach…", "Move to…"), "F6", Cmd::Move);
+                item(ui, l!("Umbenennen", "Rename"), "Shift+F6", Cmd::Rename);
+                item(ui, l!("Mehrfach-Umbenennen", "Multi-rename"), "Strg+M", Cmd::MultiRename);
+                item(ui, l!("Löschen (Papierkorb)", "Delete (trash)"), "F8", Cmd::Delete);
+                item(ui, l!("Endgültig löschen", "Delete permanently"), "Shift+F8", Cmd::DeletePermanent);
                 ui.separator();
-                item(ui, "Packen (ZIP, 7z, TAR …)", "Alt+F5", Cmd::Pack);
-                item(ui, "Entpacken nach…", "Alt+F9", Cmd::Unpack);
-                item(ui, "Hier entpacken", "", Cmd::UnpackHere);
-                item(ui, "Smart hier entpacken", "Alt+Shift+F9", Cmd::UnpackSmart);
+                item(ui, l!("Packen (ZIP, 7z, TAR …)", "Pack (ZIP, 7z, TAR …)"), "Alt+F5", Cmd::Pack);
+                item(ui, l!("Entpacken nach…", "Unpack to…"), "Alt+F9", Cmd::Unpack);
+                item(ui, l!("Hier entpacken", "Unpack here"), "", Cmd::UnpackHere);
+                item(ui, l!("Smart hier entpacken", "Smart unpack here"), "Alt+Shift+F9", Cmd::UnpackSmart);
                 ui.separator();
-                item(ui, "Dateien vergleichen (Inhalt)", "", Cmd::CompareFiles);
-                item(ui, "Eigenschaften", "Alt+Enter", Cmd::Properties);
-                item(ui, "Beenden", "", Cmd::Exit);
+                item(ui, l!("Dateien vergleichen (Inhalt)", "Compare files (content)"), "", Cmd::CompareFiles);
+                item(ui, l!("Eigenschaften", "Properties"), "Alt+Enter", Cmd::Properties);
+                item(ui, l!("Beenden", "Exit"), "", Cmd::Exit);
             });
-            ui.menu_button("Markieren", |ui| {
-                item(ui, "Gruppe markieren", "+", Cmd::SelectPattern);
-                item(ui, "Gruppe abwählen", "-", Cmd::DeselectPattern);
-                item(ui, "Alles markieren", "Strg+A", Cmd::SelectAll);
-                item(ui, "Alles abwählen", "Strg+Shift+A", Cmd::DeselectAll);
-                item(ui, "Markierung umkehren", "*", Cmd::Invert);
+            ui.menu_button(l!("Markieren", "Mark"), |ui| {
+                item(ui, l!("Gruppe markieren", "Select group"), "+", Cmd::SelectPattern);
+                item(ui, l!("Gruppe abwählen", "Deselect group"), "-", Cmd::DeselectPattern);
+                item(ui, l!("Alles markieren", "Select all"), "Strg+A", Cmd::SelectAll);
+                item(ui, l!("Alles abwählen", "Deselect all"), "Strg+Shift+A", Cmd::DeselectAll);
+                item(ui, l!("Markierung umkehren", "Invert selection"), "*", Cmd::Invert);
                 ui.separator();
-                item(ui, "Pfade kopieren", "Strg+Shift+C", Cmd::CopyPaths);
-                item(ui, "Namen kopieren", "Strg+Shift+N", Cmd::CopyNames);
+                item(ui, l!("Pfade kopieren", "Copy paths"), "Strg+Shift+C", Cmd::CopyPaths);
+                item(ui, l!("Namen kopieren", "Copy names"), "Strg+Shift+N", Cmd::CopyNames);
                 ui.separator();
-                item(ui, "Ordner vergleichen", "", Cmd::CompareDirs);
+                item(ui, l!("Ordner vergleichen", "Compare folders"), "", Cmd::CompareDirs);
             });
-            ui.menu_button("Befehle", |ui| {
-                item(ui, "Dateien suchen", "Alt+F7", Cmd::Search);
-                item(ui, "Neuer Ordner", "F7", Cmd::Mkdir);
-                item(ui, "Verzeichnisse synchronisieren…", "", Cmd::SyncDirs);
-                item(ui, "Terminal hier öffnen", "F9", Cmd::Terminal);
+            ui.menu_button(l!("Befehle", "Commands"), |ui| {
+                item(ui, l!("Dateien suchen", "Find files"), "Alt+F7", Cmd::Search);
+                item(ui, l!("Neuer Ordner", "New folder"), "F7", Cmd::Mkdir);
+                item(ui, l!("Verzeichnisse synchronisieren…", "Synchronize folders…"), "", Cmd::SyncDirs);
+                item(ui, l!("Terminal hier öffnen", "Open terminal here"), "F9", Cmd::Terminal);
                 ui.separator();
-                item(ui, "Ordner-Favoriten", "Strg+D", Cmd::Hotlist);
-                item(ui, "Zu Favoriten hinzufügen", "Strg+Shift+D", Cmd::AddHotlist);
-                item(ui, "Verlauf", "Alt+↓", Cmd::History);
+                item(ui, l!("Ordner-Favoriten", "Favourite folders"), "Strg+D", Cmd::Hotlist);
+                item(ui, l!("Zu Favoriten hinzufügen", "Add to favourites"), "Strg+Shift+D", Cmd::AddHotlist);
+                item(ui, l!("Verlauf", "History"), "Alt+↓", Cmd::History);
                 ui.separator();
-                item(ui, "Panels tauschen", "Strg+U", Cmd::Swap);
-                item(ui, "Ordner vom anderen Panel übernehmen", "Strg+G", Cmd::TakeOtherDir);
-                item(ui, "Ziel = Quelle (anderes Panel hierher)", "Strg+=", Cmd::SameDir);
+                item(ui, l!("Panels tauschen", "Swap panels"), "Strg+U", Cmd::Swap);
+                item(ui, l!("Ordner vom anderen Panel übernehmen", "Take folder from the other panel"), "Strg+G", Cmd::TakeOtherDir);
+                item(ui, l!("Ziel = Quelle (anderes Panel hierher)", "Target = source (other panel comes here)"), "Strg+=", Cmd::SameDir);
             });
-            ui.menu_button("Netz", |ui| {
-                item(ui, "Server verbinden (FTP/SFTP)…", "Strg+F", Cmd::FtpConnect);
-                item(ui, "Verbindung trennen", "Strg+Shift+F", Cmd::FtpDisconnect);
+            ui.menu_button(l!("Netz", "Net"), |ui| {
+                item(ui, l!("Server verbinden (FTP/SFTP)…", "Connect to server (FTP/SFTP)…"), "Strg+F", Cmd::FtpConnect);
+                item(ui, l!("Verbindung trennen", "Disconnect"), "Strg+Shift+F", Cmd::FtpDisconnect);
             });
-            ui.menu_button("Ansicht", |ui| {
-                item(ui, "Schnellansicht", "Strg+Q", Cmd::QuickView);
-                item(ui, "Schnellfilter", "Strg+S", Cmd::Filter);
-                item(ui, "Versteckte Dateien", "Strg+H", Cmd::ToggleHidden);
-                item(ui, "Branch-View (alle Unterordner)", "Strg+Shift+B", Cmd::BranchView);
-                ui.menu_button("Laufwerksleiste", |ui| {
+            ui.menu_button(l!("Ansicht", "View"), |ui| {
+                item(ui, l!("Schnellansicht", "Quick view"), "Strg+Q", Cmd::QuickView);
+                item(ui, l!("Schnellfilter", "Quick filter"), "Strg+S", Cmd::Filter);
+                item(ui, l!("Versteckte Dateien", "Hidden files"), "Strg+H", Cmd::ToggleHidden);
+                item(ui, l!("Branch-View (alle Unterordner)", "Branch view (all subfolders)"), "Strg+Shift+B", Cmd::BranchView);
+                ui.menu_button(l!("Laufwerksleiste", "Drive bar"), |ui| {
                     use crate::config::DriveBar;
                     for (mode, label) in [
-                        (DriveBar::Both, "Knöpfe + Dropdown"),
-                        (DriveBar::Buttons, "Nur Knöpfe"),
-                        (DriveBar::Dropdown, "Nur Dropdown"),
+                        (DriveBar::Both, l!("Knöpfe + Dropdown", "Buttons + dropdown")),
+                        (DriveBar::Buttons, l!("Nur Knöpfe", "Buttons only")),
+                        (DriveBar::Dropdown, l!("Nur Dropdown", "Dropdown only")),
                     ] {
                         if ui.radio_value(&mut self.cfg.drive_bar, mode, label).clicked() {
                             ui.close();
@@ -1374,21 +1375,21 @@ impl MieryApp {
                     }
                 });
                 ui.separator();
-                item(ui, "Nach Name", "Strg+F3", Cmd::SortName);
-                item(ui, "Nach Erweiterung", "Strg+F4", Cmd::SortExt);
-                item(ui, "Nach Datum", "Strg+F5", Cmd::SortDate);
-                item(ui, "Nach Größe", "Strg+F6", Cmd::SortSize);
+                item(ui, l!("Nach Name", "By name"), "Strg+F3", Cmd::SortName);
+                item(ui, l!("Nach Erweiterung", "By extension"), "Strg+F4", Cmd::SortExt);
+                item(ui, l!("Nach Datum", "By date"), "Strg+F5", Cmd::SortDate);
+                item(ui, l!("Nach Größe", "By size"), "Strg+F6", Cmd::SortSize);
                 ui.separator();
-                item(ui, "Neuer Tab", "Strg+T", Cmd::NewTab);
-                item(ui, "Tab schließen", "Strg+W", Cmd::CloseTab);
-                item(ui, "Neu einlesen", "Strg+R", Cmd::Reload);
+                item(ui, l!("Neuer Tab", "New tab"), "Strg+T", Cmd::NewTab);
+                item(ui, l!("Tab schließen", "Close tab"), "Strg+W", Cmd::CloseTab);
+                item(ui, l!("Neu einlesen", "Reload"), "Strg+R", Cmd::Reload);
             });
-            ui.menu_button("Konfiguration", |ui| {
-                item(ui, "Einstellungen…", "Strg+,", Cmd::Settings);
+            ui.menu_button(l!("Konfiguration", "Configuration"), |ui| {
+                item(ui, l!("Einstellungen…", "Settings…"), "Strg+,", Cmd::Settings);
             });
-            ui.menu_button("Hilfe", |ui| {
-                item(ui, "Tastenkürzel", "", Cmd::Keys);
-                item(ui, "Über", "", Cmd::About);
+            ui.menu_button(l!("Hilfe", "Help"), |ui| {
+                item(ui, l!("Tastenkürzel", "Keyboard shortcuts"), "", Cmd::Keys);
+                item(ui, l!("Über", "About"), "", Cmd::About);
             });
         });
         cmd
@@ -1402,31 +1403,31 @@ impl MieryApp {
                     cmd = Some(c);
                 }
             };
-            b(ui, "🔄", "Neu einlesen (Strg+R)", Cmd::Reload);
+            b(ui, "🔄", l!("Neu einlesen (Strg+R)", "Reload (Ctrl+R)"), Cmd::Reload);
             ui.separator();
-            b(ui, "⬅", "Zurück (Alt+←)", Cmd::Back);
-            b(ui, "➡", "Vor (Alt+→)", Cmd::Forward);
-            b(ui, "⬆", "Übergeordneter Ordner (Backspace)", Cmd::Up);
+            b(ui, "⬅", l!("Zurück (Alt+←)", "Back (Alt+←)"), Cmd::Back);
+            b(ui, "➡", l!("Vor (Alt+→)", "Forward (Alt+→)"), Cmd::Forward);
+            b(ui, "⬆", l!("Übergeordneter Ordner (Backspace)", "Parent folder (Backspace)"), Cmd::Up);
             ui.separator();
-            b(ui, "👁", "Schnellansicht (Strg+Q)", Cmd::QuickView);
-            b(ui, "🕶", "Versteckte Dateien (Strg+H)", Cmd::ToggleHidden);
-            b(ui, "⛃", "Schnellfilter (Strg+S)", Cmd::Filter);
+            b(ui, "👁", l!("Schnellansicht (Strg+Q)", "Quick view (Ctrl+Q)"), Cmd::QuickView);
+            b(ui, "🕶", l!("Versteckte Dateien (Strg+H)", "Hidden files (Ctrl+H)"), Cmd::ToggleHidden);
+            b(ui, "⛃", l!("Schnellfilter (Strg+S)", "Quick filter (Ctrl+S)"), Cmd::Filter);
             ui.separator();
-            b(ui, "🔍", "Dateien suchen (Alt+F7)", Cmd::Search);
-            b(ui, "✏", "Mehrfach-Umbenennen (Strg+M)", Cmd::MultiRename);
-            b(ui, "⚖", "Ordner vergleichen", Cmd::CompareDirs);
-            b(ui, "🔃", "Verzeichnisse synchronisieren", Cmd::SyncDirs);
-            b(ui, "📦", "Packen (Alt+F5)", Cmd::Pack);
-            b(ui, "📂", "Entpacken (Alt+F9)", Cmd::Unpack);
+            b(ui, "🔍", l!("Dateien suchen (Alt+F7)", "Find files (Alt+F7)"), Cmd::Search);
+            b(ui, "✏", l!("Mehrfach-Umbenennen (Strg+M)", "Multi-rename (Ctrl+M)"), Cmd::MultiRename);
+            b(ui, "⚖", l!("Ordner vergleichen", "Compare folders"), Cmd::CompareDirs);
+            b(ui, "🔃", l!("Verzeichnisse synchronisieren", "Synchronize folders"), Cmd::SyncDirs);
+            b(ui, "📦", l!("Packen (Alt+F5)", "Pack (Alt+F5)"), Cmd::Pack);
+            b(ui, "📂", l!("Entpacken (Alt+F9)", "Unpack (Alt+F9)"), Cmd::Unpack);
             ui.separator();
-            b(ui, "🌐", "Server verbinden – FTP/SFTP (Strg+F)", Cmd::FtpConnect);
+            b(ui, "🌐", l!("Server verbinden – FTP/SFTP (Strg+F)", "Connect to server – FTP/SFTP (Ctrl+F)"), Cmd::FtpConnect);
             ui.separator();
-            b(ui, "⭐", "Favoriten (Strg+D)", Cmd::Hotlist);
-            b(ui, "🕘", "Verlauf (Alt+↓)", Cmd::History);
-            b(ui, "↔", "Panels tauschen (Strg+U)", Cmd::Swap);
+            b(ui, "⭐", l!("Favoriten (Strg+D)", "Favourites (Ctrl+D)"), Cmd::Hotlist);
+            b(ui, "🕘", l!("Verlauf (Alt+↓)", "History (Alt+↓)"), Cmd::History);
+            b(ui, "↔", l!("Panels tauschen (Strg+U)", "Swap panels (Ctrl+U)"), Cmd::Swap);
             b(ui, "🖳", "Terminal (F9)", Cmd::Terminal);
             ui.separator();
-            b(ui, "⚙", "Einstellungen", Cmd::Settings);
+            b(ui, "⚙", l!("Einstellungen", "Settings"), Cmd::Settings);
         });
         cmd
     }
@@ -1434,14 +1435,14 @@ impl MieryApp {
     fn fkey_bar(&mut self, ui: &mut egui::Ui) -> Option<Cmd> {
         let mut cmd = None;
         let buttons = [
-            ("F3 Ansehen", Cmd::View),
-            ("F4 Bearbeiten", Cmd::Edit),
-            ("F5 Kopieren", Cmd::Copy),
-            ("F6 Verschieben", Cmd::Move),
-            ("F7 Neuer Ordner", Cmd::Mkdir),
-            ("F8 Löschen", Cmd::Delete),
+            (l!("F3 Ansehen", "F3 View"), Cmd::View),
+            (l!("F4 Bearbeiten", "F4 Edit"), Cmd::Edit),
+            (l!("F5 Kopieren", "F5 Copy"), Cmd::Copy),
+            (l!("F6 Verschieben", "F6 Move"), Cmd::Move),
+            (l!("F7 Neuer Ordner", "F7 New folder"), Cmd::Mkdir),
+            (l!("F8 Löschen", "F8 Delete"), Cmd::Delete),
             ("F9 Terminal", Cmd::Terminal),
-            ("Beenden", Cmd::Exit),
+            (l!("Beenden", "Exit"), Cmd::Exit),
         ];
         ui.columns(buttons.len(), |cols| {
             for (i, (label, c)) in buttons.iter().enumerate() {
@@ -1458,22 +1459,22 @@ impl MieryApp {
         let mut v = Vec::new();
         let tabs = [self.left.tab(), self.right.tab()];
         if tabs.iter().any(|t| t.loading) {
-            v.push("Lade Verzeichnis".to_string());
+            v.push(l!("Lade Verzeichnis", "Loading folder").to_string());
         }
         if tabs.iter().any(|t| !t.sizing.is_empty()) {
-            v.push("Berechne Ordnergröße".into());
+            v.push(l!("Berechne Ordnergröße", "Calculating folder size").into());
         }
         if self.ftp_connecting.is_some() || self.smb_mounting.is_some() {
-            v.push("Verbinde mit Server".into());
+            v.push(l!("Verbinde mit Server", "Connecting to server").into());
         }
         if !self.ftp_ops.is_empty() {
-            v.push("Server-Aktion".into());
+            v.push(l!("Server-Aktion", "Server action").into());
         }
         if let Some(j) = &self.job {
-            v.push(format!("{} läuft", j.kind.title()));
+            v.push(lf!("{} läuft", "{} running", j.kind.title()));
         }
         if self.search.is_running() {
-            v.push("Suche läuft".into());
+            v.push(l!("Suche läuft", "Search running").into());
         }
         v
     }
@@ -1495,7 +1496,7 @@ impl MieryApp {
                         egui::TextEdit::singleline(&mut self.cmdline)
                             .id(id)
                             .font(egui::TextStyle::Monospace)
-                            .hint_text("Befehl (Enter = ausführen, cd <pfad> wechselt Ordner)")
+                            .hint_text(l!("Befehl (Enter = ausführen, cd <pfad> wechselt Ordner)", "Command (Enter = run, cd <path> changes folder)"))
                             .desired_width(f32::INFINITY),
                     )
                 })
@@ -1517,11 +1518,11 @@ impl MieryApp {
                     };
                     match target.canonicalize() {
                         Ok(p) if p.is_dir() => self.navigate_active(Location::Dir(p)),
-                        _ => self.notify(format!("Ordner nicht gefunden: {}", target.to_string_lossy()), true),
+                        _ => self.notify(lf!("Ordner nicht gefunden: {}", "Folder not found: {}", target.to_string_lossy()), true),
                     }
                 } else if !line.is_empty() {
                     match fsutil::run_shell(line, &dir) {
-                        Ok(()) => self.notify(format!("Gestartet: {line}"), false),
+                        Ok(()) => self.notify(lf!("Gestartet: {line}", "Started: {line}"), false),
                         Err(e) => self.notify(e, true),
                     }
                 }
@@ -1557,16 +1558,16 @@ impl MieryApp {
                                 let mtime = std::fs::metadata(&local).and_then(|m| m.modified()).ok();
                                 self.ftp_edits.retain(|e| e.local != local);
                                 self.ftp_edits.push(FtpEdit { local, conn, remote, mtime });
-                                self.notify("Nach dem Speichern wird angeboten, die Datei wieder hochzuladen", false);
+                                self.notify(l!("Nach dem Speichern wird angeboten, die Datei wieder hochzuladen", "After saving you will be offered to upload the file again"), false);
                             }
                             Err(e) => self.notify(format!("Editor: {e}"), true),
                         }
                     }
-                    None => self.notify(format!("{title}: fertig"), false),
+                    None => self.notify(lf!("{title}: fertig", "{title}: done"), false),
                 }
             } else {
                 self.open_dialog(Dialog::Message {
-                    title: format!("{title}: {} Fehler", errors.len()),
+                    title: lf!("{title}: {} Fehler", "{title}: {} error(s)", errors.len()),
                     text: errors.join("\n"),
                 });
             }
@@ -1586,7 +1587,7 @@ impl MieryApp {
                     // The worker first walks the sources to know the totals.
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Dateien werden ermittelt…");
+                        ui.label(l!("Dateien werden ermittelt…", "Collecting files…"));
                     });
                 } else {
                     ui.add(egui::Label::new(RichText::new(&p.current).small()).truncate());
@@ -1602,8 +1603,7 @@ impl MieryApp {
                 ui.add(egui::ProgressBar::new(frac).show_percentage().animate(true));
                 let secs = job.started.elapsed().as_secs();
                 let speed = if secs > 0 { p.bytes_done / secs } else { 0 };
-                ui.label(format!(
-                    "{} / {} Dateien · {} / {} · {}:{:02} · {}/s",
+                ui.label(lf!("{} / {} Dateien · {} / {} · {}:{:02} · {}/s", "{} / {} files · {} / {} · {}:{:02} · {}/s",
                     p.files_done,
                     p.files_total,
                     fsutil::format_size_short(p.bytes_done),
@@ -1612,7 +1612,7 @@ impl MieryApp {
                     secs % 60,
                     fsutil::format_size_short(speed)
                 ));
-                if ui.button("Abbrechen").clicked() {
+                if ui.button(l!("Abbrechen", "Cancel")).clicked() {
                     job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let _ = job.answer_tx.send(crate::ops::OverwriteAnswer::Cancel);
                 }
@@ -1633,7 +1633,7 @@ impl MieryApp {
                 PanelAction::Open(i) => self.open_entry(i, ctx),
                 PanelAction::Navigate(loc) => self.active().tab_mut().navigate(loc, h, d),
                 PanelAction::Cmd(Cmd::OpenDefault) => {
-                    // "Öffnen" in the menu = Enter (folders, archives, remote files).
+                    // l!("Öffnen", "Open") in the menu = Enter (folders, archives, remote files).
                     let i = self.active_ref().tab().cursor;
                     self.open_entry(i, ctx);
                 }
@@ -1649,6 +1649,14 @@ impl MieryApp {
                     }
                 }
             }
+        }
+    }
+
+    /// Switch the UI language when the setting changed (takes effect immediately).
+    fn apply_language(&mut self) {
+        if self.applied_language != Some(self.cfg.language) {
+            self.applied_language = Some(self.cfg.language);
+            crate::i18n::apply(self.cfg.language);
         }
     }
 
@@ -1750,6 +1758,7 @@ impl eframe::App for MieryApp {
             self.startup_frames += 1;
             ctx.request_repaint();
         }
+        self.apply_language();
         self.apply_theme(&ctx);
         self.handle_keys(&ctx);
         self.handle_dropped_files(&ctx);
@@ -1807,11 +1816,11 @@ impl eframe::App for MieryApp {
                                     src.tab()
                                         .dir_sizes
                                         .get(&e.name)
-                                        .map(|s| format!("Größe: {}", fsutil::format_size(*s)))
-                                        .unwrap_or_else(|| "Leertaste/F3 berechnet die Größe".into())
+                                        .map(|s| lf!("Größe: {}", "Size: {}", fsutil::format_size(*s)))
+                                        .unwrap_or_else(|| l!("Leertaste/F3 berechnet die Größe", "Space/F3 calculates the size").into())
                                 )),
                             ),
-                            Some(_) if in_archive => (None, Some("Vorschau in Archiven nicht verfügbar".into())),
+                            Some(_) if in_archive => (None, Some(l!("Vorschau in Archiven nicht verfügbar", "Preview not available inside archives").into())),
                             Some(e) => (Some(e.path.clone()), None),
                             None => (None, None),
                         };

@@ -73,7 +73,7 @@ impl Search {
                 .build()
                 .map_err(|e| e.to_string())
         } else {
-            fsutil::wildcard_regex(&self.name_mask).ok_or_else(|| "Ungültige Maske".to_string())
+            fsutil::wildcard_regex(&self.name_mask).ok_or_else(|| l!("Ungültige Maske", "Invalid mask").to_string())
         };
         let name_re = match name_re {
             Ok(r) => r,
@@ -154,17 +154,17 @@ impl Search {
         }
         let mut action = None;
         let mut open = self.open;
-        egui::Window::new("Dateien suchen")
+        egui::Window::new(l!("Dateien suchen", "Find files"))
             .open(&mut open)
             .default_size([700.0, 500.0])
             .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
                 egui::Grid::new("search_grid").num_columns(2).show(ui, |ui| {
-                    ui.label("Suchen in:");
+                    ui.label(l!("Suchen in:", "Search in:"));
                     ui.add(egui::TextEdit::singleline(&mut self.start_dir).desired_width(f32::INFINITY));
                     ui.end_row();
-                    ui.label("Dateiname:");
+                    ui.label(l!("Dateiname:", "File name:"));
                     let r = ui.add(
                         egui::TextEdit::singleline(&mut self.name_mask)
                             .hint_text("*.txt;*.md")
@@ -174,21 +174,21 @@ impl Search {
                         self.start(ctx);
                     }
                     ui.end_row();
-                    ui.label("Enthält Text:");
+                    ui.label(l!("Enthält Text:", "Contains text:"));
                     ui.add(egui::TextEdit::singleline(&mut self.content).desired_width(f32::INFINITY));
                     ui.end_row();
                 });
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.use_regex, "Reguläre Ausdrücke");
-                    ui.checkbox(&mut self.case_sensitive, "Groß/klein beachten");
-                    ui.checkbox(&mut self.include_hidden, "Versteckte");
+                    ui.checkbox(&mut self.use_regex, l!("Reguläre Ausdrücke", "Regular expressions"));
+                    ui.checkbox(&mut self.case_sensitive, l!("Groß/klein beachten", "Match case"));
+                    ui.checkbox(&mut self.include_hidden, l!("Versteckte", "Hidden"));
                 });
                 ui.horizontal(|ui| {
                     if self.running {
-                        if ui.button("⏹ Abbrechen").clicked() {
+                        if ui.button(l!("⏹ Abbrechen", "⏹ Cancel")).clicked() {
                             self.cancel.store(true, Ordering::Relaxed);
                         }
-                    } else if ui.button("🔎 Suche starten").clicked() {
+                    } else if ui.button(l!("🔎 Suche starten", "🔎 Start search")).clicked() {
                         self.start(ctx);
                     }
                     if self.running {
@@ -199,9 +199,9 @@ impl Search {
                         self.running = false;
                     }
                     let status = if self.running {
-                        format!("{} geprüft · {} Treffer · {}", s.scanned, s.results.len(), s.current)
+                        lf!("{} geprüft · {} Treffer · {}", "{} checked · {} hits · {}", s.scanned, s.results.len(), s.current)
                     } else {
-                        format!("{} geprüft · {} Treffer", s.scanned, s.results.len())
+                        lf!("{} geprüft · {} Treffer", "{} checked · {} hits", s.scanned, s.results.len())
                     };
                     ui.add(egui::Label::new(RichText::new(status).small()).truncate());
                 });
@@ -229,10 +229,10 @@ impl Search {
                 ui.horizontal(|ui| {
                     let sel = self.selected.and_then(|i| results.get(i)).cloned();
                     ui.add_enabled_ui(sel.is_some(), |ui| {
-                        if ui.button("Gehe zu Datei").clicked() {
+                        if ui.button(l!("Gehe zu Datei", "Go to file")).clicked() {
                             action = sel.clone().map(SearchAction::GoTo);
                         }
-                        if ui.button("Ansehen (F3)").clicked() {
+                        if ui.button(l!("Ansehen (F3)", "View (F3)")).clicked() {
                             action = sel.clone().map(SearchAction::View);
                         }
                     });

@@ -60,7 +60,7 @@ impl client::Handler for Client {
     async fn check_server_key(&mut self, key: &russh::keys::PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
             *self.issue.lock().unwrap() =
-                Some(HostKeyIssue::Changed("Der Server nutzt ein SSH-Zertifikat – wird nicht unterstützt".into()));
+                Some(HostKeyIssue::Changed(l!("Der Server nutzt ein SSH-Zertifikat – wird nicht unterstützt", "The server uses an SSH certificate – not supported").into()));
             return Ok(false);
         };
         let path = known_hosts_path();
@@ -157,11 +157,11 @@ async fn authenticate(handle: &mut client::Handle<Client>, site: &Site, password
         let path = crate::panel::expand_tilde(key_file);
         let pass = (!password.is_empty()).then_some(password);
         let key = russh::keys::load_secret_key(&path, pass)
-            .map_err(|e| format!("Schlüssel {path} konnte nicht geladen werden: {e}"))?;
+            .map_err(|e| lf!("Schlüssel {path} konnte nicht geladen werden: {e}", "Could not load key {path}: {e}"))?;
         if try_key(handle, key).await {
             return Ok(());
         }
-        tried.push("Schlüsseldatei");
+        tried.push(l!("Schlüsseldatei", "key file"));
     }
 
     if site.auto_keys {
@@ -196,7 +196,7 @@ async fn authenticate(handle: &mut client::Handle<Client>, site: &Site, password
                 {
                     return Ok(());
                 }
-                tried.push("~/.ssh-Schlüssel");
+                tried.push(l!("~/.ssh-Schlüssel", "~/.ssh keys"));
             }
         }
     }
@@ -211,20 +211,20 @@ async fn authenticate(handle: &mut client::Handle<Client>, site: &Site, password
         if ok {
             return Ok(());
         }
-        tried.push("Passwort");
+        tried.push(l!("Passwort", "Password"));
     }
     tried.dedup();
     if tried.is_empty() {
-        Err("Anmeldung fehlgeschlagen: kein Passwort oder Schlüssel angegeben".into())
+        Err(l!("Anmeldung fehlgeschlagen: kein Passwort oder Schlüssel angegeben", "Login failed: no password or key given").into())
     } else {
-        Err(format!("Anmeldung fehlgeschlagen (versucht: {})", tried.join(", ")))
+        Err(lf!("Anmeldung fehlgeschlagen (versucht: {})", "Login failed (tried: {})", tried.join(", ")))
     }
 }
 
 async fn open_session(site: &Site, password: &str, trusted: Option<String>) -> Result<Session, ConnectError> {
     let host = site.host.trim().to_string();
     if host.is_empty() {
-        return Err("Kein Server angegeben".to_string().into());
+        return Err(l!("Kein Server angegeben", "No server given").to_string().into());
     }
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
@@ -235,7 +235,7 @@ async fn open_session(site: &Site, password: &str, trusted: Option<String>) -> R
     let handler = Client { host: host.clone(), port: site.port, trusted, issue: issue.clone() };
     let connected = tokio::time::timeout(TIMEOUT, client::connect(config, (host.as_str(), site.port), handler)).await;
     let mut handle = match connected {
-        Err(_) => return Err(format!("{host}:{}: Zeitüberschreitung", site.port).into()),
+        Err(_) => return Err(lf!("{host}:{}: Zeitüberschreitung", "{host}:{}: timeout", site.port).into()),
         Ok(Ok(h)) => h,
         Ok(Err(e)) => {
             return Err(match issue.lock().unwrap().take() {
@@ -293,7 +293,7 @@ impl SftpConn {
         let start = if dir.is_empty() { ".".to_string() } else { dir.clone() };
         let home = rt
             .block_on(session.sftp.canonicalize(start))
-            .map_err(|e| if dir.is_empty() { sftp_err(e) } else { format!("Startordner {dir}: {}", sftp_err(e)) })?;
+            .map_err(|e| if dir.is_empty() { sftp_err(e) } else { lf!("Startordner {dir}: {}", "Start folder {dir}: {}", sftp_err(e)) })?;
         Ok(SftpConn {
             id: remote::next_id(),
             site,
@@ -332,7 +332,7 @@ impl SftpConn {
                 Err(e) => return Err(sftp_err(e)),
             }
         }
-        Err("Verbindung verloren".into())
+        Err(l!("Verbindung verloren", "Connection lost").into())
     }
 }
 

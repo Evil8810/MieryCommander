@@ -155,12 +155,13 @@ pub fn format_mode(mode: u32) -> String {
 }
 
 pub fn format_size(n: u64) -> String {
-    // 1,234,567 like Total Commander
+    // Thousands separator: 1.234.567 (German) / 1,234,567 (English)
+    let sep = if crate::i18n::en() { ',' } else { '.' };
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push('.');
+            out.push(sep);
         }
         out.push(c);
     }
@@ -178,7 +179,10 @@ pub fn format_size_short(n: u64) -> String {
     if u == 0 {
         format!("{n} B")
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        let num = format!("{v:.1}");
+        // Decimal comma in German: 15,4 GB
+        let num = if crate::i18n::en() { num } else { num.replace('.', ",") };
+        format!("{num} {}", UNITS[u])
     }
 }
 
@@ -186,7 +190,7 @@ pub fn format_time(t: Option<SystemTime>) -> String {
     match t {
         Some(t) => {
             let dt: chrono::DateTime<chrono::Local> = t.into();
-            dt.format("%d.%m.%Y %H:%M").to_string()
+            dt.format(if crate::i18n::en() { "%Y-%m-%d %H:%M" } else { "%d.%m.%Y %H:%M" }).to_string()
         }
         None => String::new(),
     }
@@ -576,7 +580,7 @@ pub fn open_terminal(custom: &str, dir: &Path) -> Result<(), String> {
                 return Ok(());
             }
         }
-        Err("Kein Terminal gefunden (Einstellungen → Terminal)".into())
+        Err(l!("Kein Terminal gefunden (Einstellungen → Terminal)", "No terminal found (Settings → Terminal)").into())
     }
 }
 

@@ -38,16 +38,16 @@ pub enum JobKind {
 impl JobKind {
     pub fn title(&self) -> &'static str {
         match self {
-            JobKind::Copy => "Kopieren",
-            JobKind::Move => "Verschieben",
-            JobKind::Delete { .. } => "Löschen",
-            JobKind::Extract { .. } => "Entpacken",
-            JobKind::Pack => "Packen",
-            JobKind::Upload { .. } => "Hochladen",
-            JobKind::Download { .. } => "Herunterladen",
-            JobKind::FtpDelete { .. } => "Löschen (FTP)",
-            JobKind::Sync { .. } => "Synchronisieren",
-            JobKind::Unpack { .. } => "Entpacken",
+            JobKind::Copy => l!("Kopieren", "Copy"),
+            JobKind::Move => l!("Verschieben", "Move"),
+            JobKind::Delete { .. } => l!("Löschen", "Delete"),
+            JobKind::Extract { .. } => l!("Entpacken", "Unpack"),
+            JobKind::Pack => l!("Packen", "Pack"),
+            JobKind::Upload { .. } => l!("Hochladen", "Upload"),
+            JobKind::Download { .. } => l!("Herunterladen", "Download"),
+            JobKind::FtpDelete { .. } => l!("Löschen (FTP)", "Delete (FTP)"),
+            JobKind::Sync { .. } => l!("Synchronisieren", "Synchronize"),
+            JobKind::Unpack { .. } => l!("Entpacken", "Unpack"),
         }
     }
 }
@@ -197,8 +197,7 @@ impl Worker {
                         target
                     };
                     if target == *src || target.starts_with(src) && src.is_dir() {
-                        self.err(format!(
-                            "{}: Ziel liegt in der Quelle",
+                        self.err(lf!("{}: Ziel liegt in der Quelle", "{}: target is inside the source",
                             src.to_string_lossy()
                         ));
                         continue;
@@ -241,15 +240,15 @@ impl Worker {
                     }
                     self.upload(c.as_ref(), sources, &dest.to_string_lossy(), *delete_source)
                 }
-                None => self.err("Verbindung zum Server ist getrennt".into()),
+                None => self.err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
             },
             JobKind::Download { conn, dirs, delete_source } => match remote::get(*conn) {
                 Some(c) => self.download(c.as_ref(), sources, dirs, dest, *delete_source),
-                None => self.err("Verbindung zum Server ist getrennt".into()),
+                None => self.err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
             },
             JobKind::FtpDelete { conn, dirs } => match remote::get(*conn) {
                 Some(c) => self.ftp_delete(c.as_ref(), sources, dirs),
-                None => self.err("Verbindung zum Server ist getrennt".into()),
+                None => self.err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
             },
         }
     }
@@ -318,7 +317,7 @@ impl Worker {
             return;
         }
         let Ok(meta) = fs::symlink_metadata(src) else {
-            self.err(format!("{}: nicht lesbar", src.to_string_lossy()));
+            self.err(lf!("{}: nicht lesbar", "{}: not readable", src.to_string_lossy()));
             return;
         };
         if meta.file_type().is_symlink() {
@@ -378,7 +377,7 @@ impl Worker {
         let mut buf = vec![0u8; 1 << 20];
         loop {
             if self.cancelled() {
-                return Err(std::io::Error::other("abgebrochen"));
+                return Err(std::io::Error::other(l!("abgebrochen", "cancelled")));
             }
             let n = input.read(&mut buf)?;
             if n == 0 {
@@ -420,7 +419,7 @@ impl Worker {
         }
     }
 
-    /// Unpack complete archives (Alt+F9, "Hier entpacken", "Smart entpacken").
+    /// Unpack complete archives (Alt+F9, l!("Hier entpacken", "Unpack here"), "Smart entpacken").
     fn unpack(&mut self, archives: &[PathBuf], dest: &Path, smart: bool) {
         // Read all indexes first for the totals.
         let mut indexes = Vec::new();
@@ -542,7 +541,7 @@ impl Worker {
         let files = list.iter().filter(|(_, _, d)| !d).count() as u64;
         let bytes = list.iter().filter(|(_, _, d)| !d).filter_map(|(p, _, _)| fs::metadata(p).ok()).map(|m| m.len()).sum();
         self.set_totals(files, bytes);
-        let Target::Write(dest) = self.resolve_target(Path::new("Neues Archiv"), dest) else {
+        let Target::Write(dest) = self.resolve_target(Path::new(l!("Neues Archiv", "New archive")), dest) else {
             return;
         };
         let worker: &Worker = self;
@@ -582,7 +581,7 @@ impl Worker {
                 let rel = p.strip_prefix(&base).unwrap_or(&p).to_string_lossy().replace('\\', "/");
                 let remote = remote::join(dest, &rel);
                 let Ok(meta) = fs::metadata(&p) else {
-                    self.err(format!("{}: nicht lesbar", p.to_string_lossy()));
+                    self.err(lf!("{}: nicht lesbar", "{}: not readable", p.to_string_lossy()));
                     continue;
                 };
                 if meta.is_dir() {
@@ -828,7 +827,7 @@ struct ProgressReader<'a> {
 impl Read for ProgressReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.worker.cancelled() {
-            return Err(std::io::Error::other("abgebrochen"));
+            return Err(std::io::Error::other(l!("abgebrochen", "cancelled")));
         }
         let n = self.inner.read(buf)?;
         if n == 0 {

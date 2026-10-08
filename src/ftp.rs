@@ -90,13 +90,13 @@ pub struct FtpConn {
 fn open_stream(site: &Site, password: &str) -> Result<RustlsFtpStream, String> {
     let host = site.host.trim();
     if host.is_empty() {
-        return Err("Kein Server angegeben".into());
+        return Err(l!("Kein Server angegeben", "No server given").into());
     }
     let addr = (host, site.port)
         .to_socket_addrs()
         .map_err(|e| format!("{host}: {e}"))?
         .next()
-        .ok_or_else(|| format!("{host}: Adresse nicht gefunden"))?;
+        .ok_or_else(|| lf!("{host}: Adresse nicht gefunden", "{host}: address not found"))?;
     let mut stream = match site.security {
         Security::None => RustlsFtpStream::connect_timeout(addr, TIMEOUT).map_err(|e| describe(&e))?,
         Security::Explicit => RustlsFtpStream::connect_timeout(addr, TIMEOUT)
@@ -114,7 +114,7 @@ fn open_stream(site: &Site, password: &str) -> Result<RustlsFtpStream, String> {
     let user = if site.user.trim().is_empty() { "anonymous" } else { site.user.trim() };
     stream
         .login(user, password)
-        .map_err(|e| format!("Anmeldung fehlgeschlagen: {}", describe(&e)))?;
+        .map_err(|e| lf!("Anmeldung fehlgeschlagen: {}", "Login failed: {}", describe(&e)))?;
     stream.transfer_type(FileType::Binary).map_err(|e| describe(&e))?;
     // Ask for UTF-8 file names; old servers may refuse, that's fine.
     let _ = stream.opts("UTF8", Some("ON"));
@@ -149,7 +149,7 @@ impl FtpConn {
         let mut home = stream.pwd().unwrap_or_else(|_| "/".into());
         let dir = site.remote_dir.trim().to_string();
         if !dir.is_empty() {
-            stream.cwd(&dir).map_err(|e| format!("Startordner {dir}: {}", describe(&e)))?;
+            stream.cwd(&dir).map_err(|e| lf!("Startordner {dir}: {}", "Start folder {dir}: {}", describe(&e)))?;
             home = stream.pwd().unwrap_or(dir);
         }
         Ok(FtpConn {
@@ -176,7 +176,7 @@ impl FtpConn {
                 Err(e) => return Err(describe(&e)),
             }
         }
-        Err("Verbindung verloren".into())
+        Err(l!("Verbindung verloren", "Connection lost").into())
     }
 }
 

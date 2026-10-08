@@ -106,7 +106,7 @@ impl Site {
     pub fn store_password(&self, password: &str) -> Result<(), String> {
         keyring::Entry::new(KEYRING_SERVICE, &self.keyring_user())
             .and_then(|e| e.set_password(password))
-            .map_err(|e| format!("Passwort konnte nicht im Schlüsselbund gespeichert werden: {e}"))
+            .map_err(|e| lf!("Passwort konnte nicht im Schlüsselbund gespeichert werden: {e}", "Could not save the password in the keyring: {e}"))
     }
 
     pub fn forget_password(&self) {
@@ -181,7 +181,7 @@ impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConnectError::Failed(m) => f.write_str(m),
-            ConnectError::UnknownHostKey(fp) => write!(f, "Unbekannter Host-Schlüssel {fp}"),
+            ConnectError::UnknownHostKey(fp) => f.write_str(&lf!("Unbekannter Host-Schlüssel {fp}", "Unknown host key {fp}")),
         }
     }
 }

@@ -67,6 +67,7 @@ Leiste unten benutzen; `Strg`-Kürzel sind dort `Cmd`-Kürzel. `Cmd+Backspace` l
 - Kommandozeile unten (`cd` wechselt Ordner, `Strg+Enter` übernimmt Dateinamen), Terminal hier öffnen (F9)
 - Dateien aus anderen Programmen per Drag & Drop hineinziehen
 - **Bleibt immer bedienbar:** Ordner, Archive, Vorschau, Ordnergrößen und Server-Aktionen laufen im Hintergrund. Ein Spinner in der Pfadleiste und unten rechts zeigt, was gerade arbeitet; hängt ein Netzlaufwerk länger als 3 s, bietet das Panel „Abbrechen“ an
+- **Deutsch und Englisch:** Sprache folgt dem System oder wird in den Einstellungen gewählt (sofort wirksam), inkl. Zahlen- und Datumsformat
 - Automatisches Neueinlesen bei Änderungen, Hell/Dunkel/System-Design, Schriftgröße
 - Tabs, Favoriten und Einstellungen bleiben nach Neustart erhalten
 
