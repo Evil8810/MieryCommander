@@ -34,7 +34,15 @@ in `~/.local/share` ein (kein `sudo` nötig):
 ./install-desktop.sh
 ```
 
-**macOS:** gleiche Befehle. Auf Mac-Tastaturen F-Tasten mit `fn` drücken oder die
+**macOS:** Als App mit Icon bauen und in „Programme“ installieren (installiert bei Bedarf Rust über
+Homebrew; mit `--dmg` entsteht zusätzlich eine .dmg-Datei, mit `--universal` eine App für Intel und
+Apple Silicon):
+
+```bash
+./install-macos.sh
+```
+
+Ohne App-Paket gehen auch hier die normalen Befehle. Auf Mac-Tastaturen F-Tasten mit `fn` drücken oder die
 Leiste unten benutzen; `Strg`-Kürzel sind dort `Cmd`-Kürzel. `Cmd+Backspace` löscht.
 
 ## Funktionen

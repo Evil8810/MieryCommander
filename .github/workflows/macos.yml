@@ -1,0 +1,54 @@
+name: macOS
+
+# Builds and tests MieryCommander on a real Mac and produces a .dmg
+# (universal: Intel + Apple Silicon). A tag like "v0.1.0" also publishes
+# the .dmg on the GitHub release page.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # only used to attach the .dmg to a release on tags
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test
+
+      - name: App + DMG bauen / build app + dmg
+        run: ./install-macos.sh --universal --dmg --no-install
+
+      - name: Bundle prüfen / check bundle
+        run: |
+          app=target/macos/MieryCommander.app
+          test -x "$app/Contents/MacOS/miery_commander"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          plutil -lint "$app/Contents/Info.plist"
+          lipo -archs "$app/Contents/MacOS/miery_commander"
+          codesign --verify --verbose "$app"
+          ls -lh target/macos/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MieryCommander-macos
+          path: target/macos/*.dmg
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/macos/*.dmg
