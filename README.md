@@ -99,7 +99,7 @@ Alle Kürzel: Menü **Hilfe → Tastenkürzel**.
 | `src/fsutil.rs` | Dateisystem-Helfer, Formatierung, Mounts, externe Programme |
 | `src/tests.rs` | Headless-UI-Tests mit egui_kittest |
 
-## Noch nicht umgesetzt (aus `beispiel/features.txt`)
+## Noch nicht umgesetzt
 
 Thumbnail-Ansicht, Video-Vorschau, Protokoll der Dateioperationen, eigene Spalten,
 separate Baumansicht, HTTP-Proxy für FTP, Plugins.
