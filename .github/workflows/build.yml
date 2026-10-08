@@ -56,8 +56,10 @@ jobs:
       - name: Pakete / packages
         run: |
           sudo apt-get update
-          # mesa-vulkan-drivers: software GPU for the UI tests; file: AppImage check
-          sudo apt-get install -y mesa-vulkan-drivers libxkbcommon-dev libwayland-dev fontconfig file desktop-file-utils
+          # mesa-vulkan-drivers: software GPU for the UI tests; Noto fonts: font fallback test;
+          # file/desktop-file-utils: package checks
+          sudo apt-get install -y mesa-vulkan-drivers libxkbcommon-dev libwayland-dev fontconfig \
+            fonts-noto-core fonts-noto-cjk file desktop-file-utils
 
       - uses: dtolnay/rust-toolchain@stable
 
