@@ -34,7 +34,7 @@ Exec="$bin" %f
 Icon=miery-commander
 Terminal=false
 Categories=System;FileTools;FileManager;
-Keywords=Dateien;Dateimanager;Total Commander;FTP;SFTP;SMB;
+Keywords=Dateien;Dateimanager;Commander;FTP;SFTP;SMB;
 StartupWMClass=miery-commander
 StartupNotify=true
 EOF

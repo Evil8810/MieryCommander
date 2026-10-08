@@ -583,7 +583,7 @@ impl MieryApp {
             Cmd::About => self.open_dialog(Dialog::Message {
                 title: "Über MieryCommander".into(),
                 text: format!(
-                    "MieryCommander {}\nEin zweispaltiger Dateimanager im Stil von Total Commander.\nGeschrieben in Rust mit egui – für Linux und macOS.",
+                    "MieryCommander {}\nEin schneller, zweispaltiger Dateimanager.\nGeschrieben in Rust mit egui – für Linux und macOS.",
                     env!("CARGO_PKG_VERSION")
                 ),
             }),

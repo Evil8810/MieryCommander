@@ -1,6 +1,6 @@
 # MieryCommander
 
-Zweispaltiger Dateimanager im Stil von Total Commander – geschrieben in Rust mit
+Zweispaltiger Dateimanager – geschrieben in Rust mit
 [egui](https://github.com/emilk/egui), läuft auf **Linux** und **macOS**.
 
 **Webseite:** <https://evil8810.github.io/MieryCommander/>
@@ -40,7 +40,7 @@ Leiste unten benutzen; `Strg`-Kürzel sind dort `Cmd`-Kürzel. `Cmd+Backspace` l
 ## Funktionen
 
 - Zwei Panels mit **Tabs**, Pfadleiste (Doppelklick = Pfad eingeben), freier Speicher
-- **Laufwerksleiste** wie in Total Commander: ein Knopf pro Laufwerk/Freigabe über jedem Panel (der aktuelle ist hervorgehoben), wahlweise nur Knöpfe, nur Dropdown oder beides (Ansicht → Laufwerksleiste oder Einstellungen)
+- **Laufwerksleiste:** ein Knopf pro Laufwerk/Freigabe über jedem Panel (der aktuelle ist hervorgehoben), wahlweise nur Knöpfe, nur Dropdown oder beides (Ansicht → Laufwerksleiste oder Einstellungen)
 - **Laufwerksauswahl** mit Home, USB-Medien und **Netzlaufwerken**: eingehängte SMB/CIFS-, NFS-, SSHFS-, rclone- und WebDAV-Freigaben werden automatisch erkannt, egal wo sie eingehängt sind (Linux), außerdem GNOME-Freigaben (gvfs) und unter macOS alles in `/Volumes`
 - Spalten Name / Erw. / Größe / Datum / Rechte, Sortierung per Klick oder `Strg+F3…F6`, natürliche Sortierung (`file2` < `file10`)
 - Markieren wie in TC: `Einfg`, `Leertaste` (berechnet Ordnergröße), `Shift+Pfeile`, `+` / `-` / `*` mit Masken (`*.jpg;*.png`), Strg/Shift-Klick
@@ -103,5 +103,3 @@ Für das Lesen von RAR-Archiven ist über die Rust-Crate [`unrar`](https://crate
 der UnRAR-Quellcode von Alexander Roshal enthalten. Er steht unter der UnRAR-Lizenz: Er darf frei
 verwendet werden, aber nicht, um einen RAR-kompatiblen Packer zu bauen – MieryCommander kann RAR
 daher nur entpacken, nicht erstellen.
-
-Nicht verbunden mit Total Commander oder Ghisler Software.

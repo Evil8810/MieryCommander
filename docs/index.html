@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MieryCommander</title>
-<meta name="description" content="MieryCommander – ein zweispaltiger Dateimanager im Stil von Total Commander, geschrieben in Rust, für Linux und macOS.">
+<meta name="description" content="MieryCommander – ein schneller, zweispaltiger Dateimanager, geschrieben in Rust, für Linux und macOS.">
 <link rel="icon" type="image/png" href="img/favicon.png">
 <style>
   :root {
@@ -144,7 +144,7 @@
   <div class="hero wrap">
     <img class="logo" src="img/icon.svg" alt="MieryCommander Logo">
     <h1>MieryCommander</h1>
-    <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager im Stil von Total Commander – geschrieben in Rust, für Linux und macOS.</p>
+    <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager – geschrieben in Rust, für Linux und macOS.</p>
     <div class="buttons">
       <a class="btn primary" href="#install" data-i18n="cta_install">Installieren</a>
       <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
@@ -238,7 +238,6 @@ cargo run --release</pre>
 <footer>
   <div class="wrap">
     <span data-i18n="footer_license">MieryCommander ist Open Source unter der MIT-Lizenz.</span>
-    <span data-i18n="footer_tc">Nicht verbunden mit Total Commander oder Ghisler Software.</span>
   </div>
 </footer>
 
@@ -248,7 +247,7 @@ cargo run --release</pre>
 const T = {
   en: {
     nav_features: "Features", nav_shots: "Screenshots", nav_install: "Install", nav_keys: "Shortcuts",
-    tagline: "A fast, dual-pane file manager in the style of Total Commander – written in Rust, for Linux and macOS.",
+    tagline: "A fast, dual-pane file manager – written in Rust, for Linux and macOS.",
     cta_install: "Install", cta_github: "Source code on GitHub",
     badges: "Open source · MIT license · Linux & macOS · Rust + egui",
     features_title: "Features",
@@ -273,8 +272,7 @@ const T = {
     k1: "Switch panel", k2: "View / Edit", k3: "Copy / Move", k4: "New folder / Delete", k5: "Select",
     k6: "Copy / Cut / Paste", k7: "Pack / Unpack", k8: "Find files", k9: "Connect to a server (SFTP/FTP/SMB)",
     k10: "Multi-rename", k11: "New tab / Close tab", k12: "Same folder as the other panel",
-    footer_license: "MieryCommander is open source under the MIT license.",
-    footer_tc: "Not affiliated with Total Commander or Ghisler Software."
+    footer_license: "MieryCommander is open source under the MIT license."
   }
 };
 // Remember the German originals so switching back works without a reload.
