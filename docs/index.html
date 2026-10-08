@@ -146,7 +146,8 @@
     <h1>MieryCommander</h1>
     <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager – geschrieben in Rust, für Linux und macOS.</p>
     <div class="buttons">
-      <a class="btn primary" href="#install" data-i18n="cta_install">Installieren</a>
+      <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_mac">⬇ Download für macOS</a>
+      <a class="btn" href="#install" data-i18n="cta_install">Installieren</a>
       <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
     </div>
     <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux &amp; macOS · Deutsch &amp; English · Rust + egui</div>
@@ -189,7 +190,7 @@
   <section id="install">
     <div class="wrap">
       <h2 data-i18n="install_title">Installation</h2>
-      <p class="lead" data-i18n="install_lead">MieryCommander wird aus dem Quellcode gebaut. Du brauchst Rust (z. B. über rustup.rs oder Homebrew) und Git.</p>
+      <p class="lead" data-i18n="install_lead">Unter Linux wird MieryCommander aus dem Quellcode gebaut (Rust + Git). Für macOS gibt es eine fertige App.</p>
       <div class="cols">
         <div>
           <h3>Linux</h3>
@@ -201,10 +202,11 @@ cargo run --release</pre>
         </div>
         <div>
           <h3>macOS</h3>
-          <pre>brew install rust
-git clone https://github.com/Evil8810/MieryCommander.git
+          <p data-i18n="install_mac_dmg"><a href="https://github.com/Evil8810/MieryCommander/releases/latest">.dmg herunterladen</a> (Intel &amp; Apple Silicon), öffnen und MieryCommander in „Programme“ ziehen. Beim ersten Start: <b>Rechtsklick → Öffnen</b> – die App ist nicht bei Apple beglaubigt.</p>
+          <p data-i18n="install_mac_src">Oder selbst bauen und installieren (installiert Rust bei Bedarf über Homebrew):</p>
+          <pre>git clone https://github.com/Evil8810/MieryCommander.git
 cd MieryCommander
-cargo run --release</pre>
+./install-macos.sh</pre>
           <p data-i18n="install_mac">Auf Mac-Tastaturen die F-Tasten mit fn drücken oder die Leiste unten benutzen; Strg-Kürzel sind dort Cmd-Kürzel.</p>
         </div>
       </div>
@@ -267,8 +269,11 @@ const T = {
     s1: "Context menu with all file actions", s2: "Comparing two files", s3: "Synchronizing directories",
     s4: "Opening a ZIP archive like a folder", s5: "Connecting to an SFTP server",
     install_title: "Installation",
-    install_lead: "MieryCommander is built from source. You need Rust (e.g. via rustup.rs or Homebrew) and Git.",
+    install_lead: "On Linux MieryCommander is built from source (Rust + Git). For macOS there is a ready-made app.",
     install_menu: "Add it to the start menu (with icon, no sudo):",
+    cta_mac: "⬇ Download for macOS",
+    install_mac_dmg: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .dmg</a> (Intel &amp; Apple Silicon), open it and drag MieryCommander into “Applications”. On first launch: <b>right-click → Open</b> – the app is not notarized by Apple.",
+    install_mac_src: "Or build and install it yourself (installs Rust via Homebrew if needed):",
     install_mac: "On Mac keyboards press the F keys with fn or use the bar at the bottom; Ctrl shortcuts are Cmd shortcuts there.",
     keys_title: "Important shortcuts",
     k1: "Switch panel", k2: "View / Edit", k3: "Copy / Move", k4: "New folder / Delete", k5: "Select",
