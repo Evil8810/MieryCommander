@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MieryCommander</title>
-<meta name="description" content="MieryCommander – ein schneller, zweispaltiger Dateimanager, geschrieben in Rust, für Linux und macOS.">
+<meta name="description" content="MieryCommander – ein schneller, zweispaltiger Dateimanager, geschrieben in Rust, für Linux, macOS und Windows.">
 <link rel="icon" type="image/png" href="img/favicon.png">
 <style>
   :root {
@@ -144,14 +144,15 @@
   <div class="hero wrap">
     <img class="logo" src="img/icon.svg" alt="MieryCommander Logo">
     <h1>MieryCommander</h1>
-    <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager – geschrieben in Rust, für Linux und macOS.</p>
+    <p class="tag" data-i18n="tagline">Ein schneller, zweispaltiger Dateimanager – geschrieben in Rust, für Linux, macOS und Windows.</p>
     <div class="buttons">
       <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_mac">⬇ Download für macOS</a>
       <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_linux">⬇ Download für Linux</a>
+      <a class="btn primary" href="https://github.com/Evil8810/MieryCommander/releases/latest" data-i18n="cta_win">⬇ Download für Windows</a>
       <a class="btn" href="#install" data-i18n="cta_install">Installieren</a>
       <a class="btn" href="https://github.com/Evil8810/MieryCommander" data-i18n="cta_github">Quellcode auf GitHub</a>
     </div>
-    <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux &amp; macOS · Deutsch &amp; English · Rust + egui</div>
+    <div class="badges" data-i18n="badges">Open Source · MIT-Lizenz · Linux, macOS &amp; Windows · Deutsch &amp; English · Rust + egui</div>
     <div class="shot"><img data-shot="main" src="img/main.png" alt="MieryCommander Hauptfenster" width="1280" height="760"></div>
   </div>
 
@@ -191,7 +192,7 @@
   <section id="install">
     <div class="wrap">
       <h2 data-i18n="install_title">Installation</h2>
-      <p class="lead" data-i18n="install_lead">Fertige Downloads für Linux (AppImage) und macOS (.dmg) – oder selbst aus dem Quellcode bauen.</p>
+      <p class="lead" data-i18n="install_lead">Fertige Downloads für Linux (AppImage), macOS (.dmg) und Windows (.zip) – oder selbst aus dem Quellcode bauen.</p>
       <div class="cols">
         <div>
           <h3>Linux</h3>
@@ -213,6 +214,14 @@ cargo run --release</pre>
 cd MieryCommander
 ./install-macos.sh</pre>
           <p data-i18n="install_mac">Auf Mac-Tastaturen die F-Tasten mit fn drücken oder die Leiste unten benutzen; Strg-Kürzel sind dort Cmd-Kürzel.</p>
+        </div>
+        <div>
+          <h3>Windows</h3>
+          <p data-i18n="install_win"><a href="https://github.com/Evil8810/MieryCommander/releases/latest">.zip herunterladen</a>, entpacken (z. B. nach „Dokumente\MieryCommander“) und <code>miery_commander.exe</code> starten. Beim ersten Start warnt Windows evtl. („Der Computer wurde durch Windows geschützt“): <b>Weitere Informationen → Trotzdem ausführen</b> – das Programm ist nicht bei Microsoft signiert. Tipp: Rechtsklick auf die .exe → „An Start anheften“.</p>
+          <p data-i18n="install_win_src">Selbst bauen (Rust von rustup.rs):</p>
+          <pre>git clone https://github.com/Evil8810/MieryCommander.git
+cd MieryCommander
+cargo run --release</pre>
         </div>
       </div>
     </div>
@@ -255,9 +264,9 @@ cd MieryCommander
 const T = {
   en: {
     nav_features: "Features", nav_shots: "Screenshots", nav_install: "Install", nav_keys: "Shortcuts",
-    tagline: "A fast, dual-pane file manager – written in Rust, for Linux and macOS.",
+    tagline: "A fast, dual-pane file manager – written in Rust, for Linux, macOS and Windows.",
     cta_install: "Install", cta_github: "Source code on GitHub",
-    badges: "Open source · MIT license · Linux & macOS · English & German · Rust + egui",
+    badges: "Open source · MIT license · Linux, macOS & Windows · English & German · Rust + egui",
     features_title: "Features",
     features_lead: "Everything you expect from a commander – just as usable with the keyboard as with the mouse.",
     f1_t: "Two panels & tabs", f1: "Function key bar, tabs, drive bar, drag and drop, “Open with”, type-to-search, favourites and history.",
@@ -274,10 +283,13 @@ const T = {
     s1: "Context menu with all file actions", s2: "Comparing two files", s3: "Synchronizing directories",
     s4: "Opening a ZIP archive like a folder", s5: "Connecting to an SFTP server",
     install_title: "Installation",
-    install_lead: "Ready-made downloads for Linux (AppImage) and macOS (.dmg) – or build it from source with Rust.",
+    install_lead: "Ready-made downloads for Linux (AppImage), macOS (.dmg) and Windows (.zip) – or build it from source with Rust.",
     install_menu: "Add it to the start menu (with icon, no sudo):",
     cta_mac: "⬇ Download for macOS",
     cta_linux: "⬇ Download for Linux",
+    cta_win: "⬇ Download for Windows",
+    install_win: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .zip</a>, unpack it (e.g. to “Documents\\MieryCommander”) and start <code>miery_commander.exe</code>. On first launch Windows may warn (“Windows protected your PC”): <b>More info → Run anyway</b> – the program is not signed with Microsoft. Tip: right-click the .exe → “Pin to Start”.",
+    install_win_src: "Build it yourself (Rust from rustup.rs):",
     install_linux_appimage: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .AppImage</a>, make it executable (right-click → Properties → “Executable”) and start it. With <b>Gear Lever</b> (e.g. on Bazzite) it lands in the start menu with its icon.",
     install_linux_tar: "Or unpack the <b>.tar.gz</b> and run <code>./install-desktop.sh</code> – installs into <code>~/.local</code> and the start menu, no sudo. Build it yourself:",
     install_mac_dmg: "<a href=\"https://github.com/Evil8810/MieryCommander/releases/latest\">Download the .dmg</a> (Intel &amp; Apple Silicon), open it and drag MieryCommander into “Applications”. On first launch: <b>right-click → Open</b> – the app is not notarized by Apple.",

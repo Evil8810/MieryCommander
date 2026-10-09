@@ -758,5 +758,19 @@ tmpfs /tmp tmpfs rw 0 0
             ]
         );
     }
-}
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_drives_and_attributes() {
+        assert_eq!(root_of(Path::new(r"C:\Users\anna\Dokumente")), PathBuf::from(r"C:\"));
+        assert_eq!(root_of(Path::new(r"\\nas\Media\Filme")), PathBuf::from(r"\\nas\Media\"));
+        assert_eq!(format_mode(0x21), "ra--");
+        assert_eq!(format_mode(0x26), "-ahs");
+        let drives = crate::winsys::drives();
+        assert!(drives.iter().any(|d| d.root == system_root()), "system drive listed: {drives:?}");
+        let (free, total) = disk_space(&system_root()).expect("free space of the system drive");
+        assert!(free > 0 && total >= free);
+        let places = scan_locations();
+        assert!(places.iter().any(|p| p.kind == PlaceKind::Root && p.short_label().starts_with(&system_root().to_string_lossy()[..2])));
+    }
+}
