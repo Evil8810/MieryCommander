@@ -389,14 +389,14 @@ impl MieryApp {
                     return;
                 }
                 #[cfg(windows)]
-                {
-                    if let Err(e) = crate::openwith::system_dialog(&files[0]) {
-                        self.notify(e, true);
-                    }
-                    return;
+                if let Err(e) = crate::openwith::system_dialog(&files[0]) {
+                    self.notify(e, true);
                 }
-                let suggested = crate::openwith::apps_for(&files[0]);
-                self.open_dialog(Dialog::OpenWith { files, filter: String::new(), suggested, all: crate::openwith::all_apps(), command: String::new() });
+                #[cfg(not(windows))]
+                {
+                    let suggested = crate::openwith::apps_for(&files[0]);
+                    self.open_dialog(Dialog::OpenWith { files, filter: String::new(), suggested, all: crate::openwith::all_apps(), command: String::new() });
+                }
             }
             Cmd::NewFile => {
                 if local {

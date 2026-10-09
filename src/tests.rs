@@ -1103,6 +1103,8 @@ fn branch_view_lists_all_files_of_all_subfolders() {
     assert!(h.state().active_ref().tab().branch);
     let mut names = remote_names(h.state());
     names.retain(|n| n != "..");
+    // (Windows shows "projekt\\README.md")
+    let mut names: Vec<String> = names.into_iter().map(|n| n.replace('\\', "/")).collect();
     names.sort();
     assert_eq!(names, ["oben.txt", "projekt/README.md", "projekt/src/main.rs", "projekt/src/tief/日本語.txt"]);
     // Operations work on the real files: F5 copies the deep file.

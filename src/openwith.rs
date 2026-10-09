@@ -5,6 +5,9 @@
 //!   application first – the same list Dolphin or Nautilus show.
 //! - macOS: Launch Services (`LSCopyApplicationURLsForURL`), opened with `open -a`.
 
+// Windows uses the system's own dialog; the desktop-entry code is unused there.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
