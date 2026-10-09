@@ -3,6 +3,7 @@ name: Build
 # Builds and tests MieryCommander on macOS and Linux:
 # - macOS: .dmg (universal: Intel + Apple Silicon)
 # - Linux: AppImage + tar.gz (built on an older Ubuntu so it runs on most distributions)
+# - Windows: .zip with miery_commander.exe
 # A tag like "v0.1.0" also publishes everything on the GitHub release page.
 on:
   push:
@@ -90,9 +91,39 @@ jobs:
             target/linux/*.AppImage
             target/linux/*.tar.gz
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test
+
+      - name: Programm bauen / build
+        run: cargo build --release
+
+      - name: ZIP packen / pack zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $dir = "target/windows/MieryCommander"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/miery_commander.exe, README.md, LICENSE -Destination $dir
+          Compress-Archive -Path $dir -DestinationPath "target/windows/MieryCommander-$version-windows-x86_64.zip" -Force
+          Get-ChildItem target/windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MieryCommander-windows
+          path: target/windows/*.zip
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, linux]
+    needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

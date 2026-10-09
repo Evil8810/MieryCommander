@@ -21,11 +21,17 @@ pub struct App {
 
 /// Applications for these files (by the first file's type), default first.
 pub fn apps_for(path: &Path) -> Vec<App> {
+    // Windows: the system's own "Open with" dialog is used instead (see `system_dialog`).
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Vec::new()
+    }
     #[cfg(target_os = "macos")]
     {
         mac::apps_for(path)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let mime = if path.is_dir() { "inode/directory".to_string() } else { mime_db().mime_of(path) };
         static CACHE: OnceLock<Mutex<HashMap<String, Vec<App>>>> = OnceLock::new();
@@ -45,7 +51,11 @@ pub fn all_apps() -> Vec<App> {
     {
         mac::all_apps()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Vec::new()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let mut v: Vec<App> = desktop_entries()
             .iter()
@@ -66,6 +76,18 @@ pub fn warm_up() {
             let _ = mime_db();
         }
     });
+}
+
+/// Windows: show the system's "Open with" dialog for `path`.
+#[cfg(windows)]
+pub fn system_dialog(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // OpenAs_RunDLL takes the rest of the command line as the path, unquoted.
+    std::process::Command::new("rundll32.exe")
+        .raw_arg(format!("shell32.dll,OpenAs_RunDLL {}", path.display()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Start `app` with the files.

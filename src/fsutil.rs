@@ -111,6 +111,9 @@ pub fn read_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
         let Ok(lmeta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
+        if !show_hidden && is_hidden(&lmeta) {
+            continue;
+        }
         let is_link = lmeta.file_type().is_symlink();
         // Follow links for type/size, but keep the link flag.
         let meta = if is_link {
@@ -138,11 +141,35 @@ pub fn mode_of(meta: &std::fs::Metadata) -> u32 {
     meta.permissions().mode()
 }
 
-#[cfg(not(unix))]
+/// Windows: the file attributes (read-only, hidden, system, archive).
+#[cfg(windows)]
 pub fn mode_of(meta: &std::fs::Metadata) -> u32 {
-    if meta.permissions().readonly() { 0o444 } else { 0o644 }
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes()
 }
 
+/// Windows "hidden" attribute (dot-files count as hidden everywhere).
+#[cfg(windows)]
+fn is_hidden(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes() & 0x2 != 0
+}
+
+#[cfg(not(windows))]
+fn is_hidden(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Windows attributes like Total Commander shows them: "rahs" → "-a--".
+#[cfg(windows)]
+pub fn format_mode(attrs: u32) -> String {
+    [(0x1, 'r'), (0x20, 'a'), (0x2, 'h'), (0x4, 's')]
+        .iter()
+        .map(|(bit, c)| if attrs & bit != 0 { *c } else { '-' })
+        .collect()
+}
+
+#[cfg(not(windows))]
 pub fn format_mode(mode: u32) -> String {
     let mut s = String::with_capacity(9);
     for shift in [6, 3, 0] {
@@ -210,9 +237,42 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     Some((st.f_bavail as u64 * frsize, st.f_blocks as u64 * frsize))
 }
 
-#[cfg(not(unix))]
-pub fn disk_space(_path: &Path) -> Option<(u64, u64)> {
-    None
+#[cfg(windows)]
+pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
+    crate::winsys::disk_space(path)
+}
+
+/// The top folder of the drive/file system `path` is on: "/" or "C:\".
+pub fn root_of(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        let root: PathBuf = path
+            .components()
+            .take_while(|c| matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir))
+            .collect();
+        if root.as_os_str().is_empty() { system_root() } else { root }
+    } else {
+        PathBuf::from("/")
+    }
+}
+
+/// "/" or the Windows system drive ("C:\").
+pub fn system_root() -> PathBuf {
+    if cfg!(windows) {
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        PathBuf::from(format!("{drive}\\"))
+    } else {
+        PathBuf::from("/")
+    }
+}
+
+/// Places that always exist: the root (or system drive) and home.
+fn base_places() -> Vec<Place> {
+    let root = system_root();
+    let mut v = vec![Place { label: root.to_string_lossy().trim_end_matches('\\').to_string(), path: root, kind: PlaceKind::Root }];
+    if let Some(home) = dirs::home_dir() {
+        v.push(Place { label: "Home".into(), path: home, kind: PlaceKind::Home });
+    }
+    v
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -245,7 +305,7 @@ impl Place {
     /// Compact name for a drive button: "/", "Home", "USB STICK", "Media".
     pub fn short_label(&self) -> String {
         match self.kind {
-            PlaceKind::Root => "/".into(),
+            PlaceKind::Root => self.label.clone(),
             PlaceKind::Home => "Home".into(),
             PlaceKind::Removable => self.label.clone(),
             PlaceKind::Network => {
@@ -331,9 +391,19 @@ fn parse_mounts(text: &str) -> Vec<Place> {
 }
 
 fn scan_locations() -> Vec<Place> {
-    let mut v = vec![Place { label: "/".into(), path: "/".into(), kind: PlaceKind::Root }];
-    if let Some(home) = dirs::home_dir() {
-        v.push(Place { label: "Home".into(), path: home, kind: PlaceKind::Home });
+    let mut v = base_places();
+    #[cfg(windows)]
+    {
+        use crate::winsys::DriveKind;
+        v.remove(0); // the system drive comes with the other drives
+        for d in crate::winsys::drives() {
+            let kind = match d.kind {
+                DriveKind::Fixed => PlaceKind::Root,
+                DriveKind::Removable => PlaceKind::Removable,
+                DriveKind::Network => PlaceKind::Network,
+            };
+            v.push(Place { label: d.label, path: d.root, kind });
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -430,11 +500,7 @@ pub fn locations() -> Vec<Place> {
         Some((_, v)) => v,
         None => {
             // First call: root and home are always there.
-            let mut v = vec![Place { label: "/".into(), path: "/".into(), kind: PlaceKind::Root }];
-            if let Some(home) = dirs::home_dir() {
-                v.push(Place { label: "Home".into(), path: home, kind: PlaceKind::Home });
-            }
-            v
+            base_places()
         }
     }
 }
@@ -546,6 +612,14 @@ pub fn open_terminal(custom: &str, dir: &Path) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| e.to_string());
     }
+    #[cfg(windows)]
+    {
+        // Windows Terminal (standard on Windows 11), else PowerShell in its own window.
+        if Command::new("wt.exe").arg("-d").arg(dir).spawn().is_ok() {
+            return Ok(());
+        }
+        return Command::new("powershell.exe").arg("-NoExit").current_dir(dir).spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
     #[cfg(target_os = "macos")]
     {
         return Command::new("open")
@@ -586,6 +660,13 @@ pub fn open_terminal(custom: &str, dir: &Path) -> Result<(), String> {
 
 /// Run a command line in `dir` through the user's shell, detached.
 pub fn run_shell(cmdline: &str, dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // The window stays open (/K), so the output can be read.
+        return Command::new("cmd.exe").arg("/K").raw_arg(cmdline).current_dir(dir).spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
+    #[allow(unreachable_code)]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     Command::new(shell)
         .arg("-c")

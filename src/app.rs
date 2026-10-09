@@ -388,6 +388,13 @@ impl MieryApp {
                     self.notify(l!("„Öffnen mit“ geht nur mit lokalen Dateien", "“Open with” only works with local files"), true);
                     return;
                 }
+                #[cfg(windows)]
+                {
+                    if let Err(e) = crate::openwith::system_dialog(&files[0]) {
+                        self.notify(e, true);
+                    }
+                    return;
+                }
                 let suggested = crate::openwith::apps_for(&files[0]);
                 self.open_dialog(Dialog::OpenWith { files, filter: String::new(), suggested, all: crate::openwith::all_apps(), command: String::new() });
             }
@@ -573,7 +580,10 @@ impl MieryApp {
             Cmd::Back => self.active().tab_mut().go_back(h, d),
             Cmd::Forward => self.active().tab_mut().go_forward(h, d),
             Cmd::Up => self.active().tab_mut().go_up(h, d),
-            Cmd::Root => self.navigate_active(Location::Dir("/".into())),
+            Cmd::Root => {
+                let root = fsutil::root_of(&self.active_dir());
+                self.navigate_active(Location::Dir(root));
+            }
             Cmd::Home => {
                 if let Some(home) = dirs::home_dir() {
                     self.navigate_active(Location::Dir(home));

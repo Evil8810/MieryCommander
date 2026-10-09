@@ -4,6 +4,9 @@
 //! - Linux AppImage: the .AppImage file is replaced (`$APPIMAGE`).
 //! - Linux tar.gz + install-desktop.sh: the program in ~/.local/bin is replaced.
 //! - macOS: the .app bundle is replaced with the one from the new .dmg.
+//! - Windows: the .exe is replaced with the one from the new .zip (a running
+//!   .exe can't be overwritten, but renamed – so the old one becomes ".old"
+//!   and is deleted at the next start).
 //! - Built from source: only a hint (git pull + cargo build).
 
 use serde::Deserialize;
@@ -60,6 +63,8 @@ pub enum Install {
     Binary(PathBuf),
     /// macOS app bundle.
     MacApp(PathBuf),
+    /// Windows program file (unpacked from the .zip anywhere).
+    WinExe(PathBuf),
     /// Built from source or unknown: update by hand.
     Manual,
 }
@@ -76,6 +81,13 @@ pub fn install_kind() -> Install {
 }
 
 fn detect(exe: Option<&Path>, appimage: Option<PathBuf>, home: Option<PathBuf>) -> Install {
+    if cfg!(windows) {
+        // Built with cargo (…\target\release\…): update by hand.
+        return match exe {
+            Some(e) if !e.components().any(|c| c.as_os_str() == "target") => Install::WinExe(e.to_path_buf()),
+            _ => Install::Manual,
+        };
+    }
     if cfg!(target_os = "macos") {
         if let Some(app) = exe.and_then(|e| e.ancestors().find(|a| a.extension().is_some_and(|x| x == "app"))) {
             return Install::MacApp(app.to_path_buf());
@@ -137,6 +149,7 @@ pub fn pick_asset<'a>(rel: &'a Release, kind: &Install) -> Option<&'a Asset> {
         Install::AppImage(_) => a.name.ends_with(&format!("-{arch}.AppImage")),
         Install::Binary(_) => a.name.ends_with(&format!("-linux-{arch}.tar.gz")),
         Install::MacApp(_) => a.name.ends_with(".dmg"),
+        Install::WinExe(_) => a.name.ends_with(&format!("-windows-{arch}.zip")),
         Install::Manual => false,
     })
 }
@@ -174,6 +187,18 @@ fn make_executable(p: &Path) -> Result<(), String> {
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
 }
 
+#[cfg(not(unix))]
+fn make_executable(_p: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows: delete the ".old" program file a previous update left behind.
+pub fn cleanup_old() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(sibling(&exe, "old"));
+    }
+}
+
 /// A temporary file next to `target` (same file system, so the final rename is atomic).
 fn sibling(target: &Path, suffix: &str) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
@@ -206,8 +231,40 @@ pub fn install(rel: &Release, kind: &Install, progress: Arc<AtomicU64>) -> Resul
             r
         }
         Install::MacApp(app) => mac_install(asset, app, &progress),
+        Install::WinExe(exe) => {
+            let archive = sibling(exe, "download.zip");
+            let new = sibling(exe, "new");
+            let old = sibling(exe, "old");
+            let r = download(asset, &archive, &progress).and_then(|_| extract_exe_from_zip(&archive, &new)).and_then(|_| {
+                // The running .exe can be renamed, but not overwritten.
+                let _ = std::fs::remove_file(&old);
+                std::fs::rename(exe, &old).map_err(|e| e.to_string())?;
+                std::fs::rename(&new, exe).map_err(|e| {
+                    let _ = std::fs::rename(&old, exe); // put the old version back
+                    e.to_string()
+                })
+            });
+            let _ = std::fs::remove_file(&archive);
+            let _ = std::fs::remove_file(&new);
+            r
+        }
         Install::Manual => Err(l!("Selbst gebaut – bitte mit git pull und cargo build aktualisieren", "Built from source – please update with git pull and cargo build").into()),
     }
+}
+
+/// The program `miery_commander.exe` from the Windows .zip.
+fn extract_exe_from_zip(archive: &Path, dest: &Path) -> Result<(), String> {
+    let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if entry.is_file() && entry.name().rsplit(['/', '\\']).next() == Some("miery_commander.exe") {
+            let mut out = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+    Err(l!("Programm nicht im Archiv gefunden", "Program not found in the archive").into())
 }
 
 /// The program file `…/miery_commander` from the tar.gz.
@@ -286,10 +343,21 @@ fn mac_install(asset: &Asset, app: &Path, progress: &AtomicU64) -> Result<(), St
 
 /// Start the freshly installed version (after this one has closed).
 pub fn restart(kind: &Install) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Install::WinExe(exe) = kind {
+        use std::os::windows::process::CommandExt;
+        let path = exe.to_string_lossy().replace('\'', "''");
+        return std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Start-Sleep -Seconds 1; Start-Process -FilePath '{path}'")])
+            .creation_flags(crate::winsys::CREATE_NO_WINDOW)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
     let (script, target) = match kind {
         Install::AppImage(p) | Install::Binary(p) => ("sleep 1; exec \"$0\"", p),
         Install::MacApp(app) => ("sleep 1; open -n \"$0\"", app),
-        Install::Manual => return Ok(()),
+        Install::WinExe(_) | Install::Manual => return Ok(()),
     };
     std::process::Command::new("sh")
         .args(["-c", script])
@@ -347,7 +415,11 @@ mod tests {
         let image = home.join("MieryCommander.AppImage");
         std::fs::write(&image, "").unwrap();
         let bin = home.join(".local/bin/miery_commander").canonicalize().unwrap_or(home.join(".local/bin/miery_commander"));
-        if cfg!(target_os = "macos") {
+        if cfg!(windows) {
+            let exe = Path::new(r"C:\Users\anna\Programme\MieryCommander\miery_commander.exe");
+            assert_eq!(detect(Some(exe), None, None), Install::WinExe(exe.to_path_buf()));
+            assert_eq!(detect(Some(Path::new(r"C:\src\target\release\miery_commander.exe")), None, None), Install::Manual);
+        } else if cfg!(target_os = "macos") {
             let exe = Path::new("/Applications/MieryCommander.app/Contents/MacOS/miery_commander");
             assert_eq!(detect(Some(exe), None, None), Install::MacApp("/Applications/MieryCommander.app".into()));
         } else {
@@ -360,6 +432,7 @@ mod tests {
     /// Against the real GitHub release (network): cargo test real_update -- --ignored
     #[test]
     #[ignore]
+    #[cfg(unix)]
     fn real_update() {
         let rel: Release = agent().get(API).call().unwrap().body_mut().read_json().unwrap();
         println!("latest: {} ({} assets)", rel.version(), rel.assets.len());
@@ -377,6 +450,29 @@ mod tests {
         }
         let leftovers: Vec<_> = std::fs::read_dir(d.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(leftovers.len(), 2, "no temporary files left: {leftovers:?}");
+    }
+
+    #[test]
+    fn exe_from_zip() {
+        let d = tempfile::tempdir().unwrap();
+        let archive = d.path().join("pkg.zip");
+        {
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            z.start_file("MieryCommander/README.md", opts).unwrap();
+            z.write_all(b"readme").unwrap();
+            z.start_file("MieryCommander/miery_commander.exe", opts).unwrap();
+            z.write_all(b"MZ-new").unwrap();
+            z.finish().unwrap();
+        }
+        let out = d.path().join("prog.exe");
+        extract_exe_from_zip(&archive, &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"MZ-new");
+        let r: Release = release();
+        let asset = format!("MieryCommander-0.2.0-windows-{}.zip", std::env::consts::ARCH);
+        let mut r2 = r.clone();
+        r2.assets.push(Asset { name: asset.clone(), url: "https://e/w".into(), size: 40 });
+        assert_eq!(pick_asset(&r2, &Install::WinExe("C:/M/miery_commander.exe".into())).unwrap().name, asset);
     }
 
     #[test]

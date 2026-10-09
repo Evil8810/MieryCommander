@@ -104,11 +104,33 @@ pub fn mount(host: &str, share: &str, user: &str, password: &str) -> Result<Path
             if h.contains('.') || h.contains(':') { Err(err) } else { attempt(&format!("{h}.local")).map_err(|_| err) }
         })
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        // Windows opens \\server\share directly; we only log in first.
+        let h = bare_host(host);
+        let s = share.trim().trim_matches(['/', '\\']);
+        if s.is_empty() {
+            return Err(l!("Bitte eine Freigabe eintragen oder mit „📂 Anzeigen“ auswählen", "Please enter a share or pick one with “📂 List”").into());
+        }
+        let unc = format!("\\\\{h}\\{}", s.replace('/', "\\"));
+        // Guest: try with the current Windows login.
+        let login_user = if is_guest(user) && password.is_empty() { "" } else { user };
+        crate::winsys::connect_share(&unc, login_user, password)?;
+        let path = PathBuf::from(format!("{unc}\\"));
+        std::fs::read_dir(&path).map_err(|e| format!("{unc}: {e}"))?;
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = url;
         Err(l!("SMB wird auf diesem System nicht unterstützt", "SMB is not supported on this system").into())
     }
+}
+
+/// "smb://nas.local/" or "\\\\nas" → "nas.local" / "nas".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn bare_host(host: &str) -> &str {
+    host.trim().trim_start_matches("smb://").trim_start_matches("\\\\").trim_end_matches(['/', '\\'])
 }
 
 /// No user (or "guest"/"Gast"): log in as guest.
@@ -189,7 +211,11 @@ pub fn discover() -> Result<Vec<(String, String)>, String> {
         found.dedup_by(|a, b| a.1 == b.1);
         Ok(found)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Err(l!("Die Netzwerksuche gibt es unter Windows nicht – bitte Servername oder IP-Adresse eintragen", "Network search is not available on Windows – please enter the server name or IP address").into())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let out = output_within(std::process::Command::new("avahi-browse").args(["-tpr", "_smb._tcp"]), std::time::Duration::from_secs(5))
             .map_err(|e| lf!("Netzwerksuche nicht möglich (avahi-browse): {e}", "Network search not possible (avahi-browse): {e}"))?;
@@ -259,6 +285,19 @@ pub fn list_shares(host: &str, user: &str, password: &str) -> Result<Vec<String>
     if host.is_empty() {
         return Err(l!("Kein Server angegeben", "No server given").into());
     }
+    #[cfg(windows)]
+    {
+        if !(is_guest(user) && password.is_empty()) {
+            // Log in to the server first, so it shows its shares to this user.
+            crate::winsys::connect_share(&format!("\\\\{host}\\IPC$"), user, password)?;
+        }
+        let shares = crate::winsys::list_shares(host).map_err(|e| lf!("Freigaben können nicht abgefragt werden: {e}", "Can't list the shares: {e}"))?;
+        if shares.is_empty() {
+            return Err(l!("Keine Freigaben gefunden. Bitte den Freigabenamen eintragen.", "No shares found. Please enter the share name.").into());
+        }
+        return Ok(shares);
+    }
+    #[cfg_attr(windows, allow(unreachable_code))]
     let limit = std::time::Duration::from_secs(15);
     #[cfg(target_os = "macos")]
     let out = {
@@ -276,6 +315,8 @@ pub fn list_shares(host: &str, user: &str, password: &str) -> Result<Vec<String>
     };
     #[cfg(not(target_os = "macos"))]
     let out = {
+        #[cfg(windows)]
+        let _ = (user, password);
         let mut cmd = std::process::Command::new("smbclient");
         cmd.args(["-g", "-L", host]);
         if is_guest(user) && password.is_empty() {

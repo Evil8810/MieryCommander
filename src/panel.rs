@@ -911,8 +911,8 @@ pub fn show_panel(
                     actions.push(PanelAction::Navigate(p));
                 }
             }
-            if ui.small_button("/").on_hover_text(l!("Wurzel", "Root")).clicked() {
-                actions.push(PanelAction::Navigate(Location::Dir("/".into())));
+            if ui.small_button(if cfg!(windows) { "\\" } else { "/" }).on_hover_text(l!("Wurzel", "Root")).clicked() {
+                actions.push(PanelAction::Navigate(Location::Dir(fsutil::root_of(&tab.loc.real_dir()))));
             }
             if ui.small_button("~").on_hover_text("Home").clicked()
                 && let Some(h) = dirs::home_dir()
@@ -1353,7 +1353,9 @@ fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Op
     }
     if !e.is_parent {
         menu_item(ui, if e.is_dir { l!("Öffnen", "Open") } else { l!("Öffnen (Standardprogramm)", "Open (default application)") }, "Enter", Cmd::OpenDefault, &mut out);
-        if local {
+        if local && cfg!(windows) {
+            menu_item(ui, l!("Öffnen mit…", "Open with…"), "Shift+Enter", Cmd::OpenWith, &mut out);
+        } else if local {
             ui.menu_button(l!("Öffnen mit", "Open with"), |ui| {
                 ui.set_min_width(220.0);
                 let apps = crate::openwith::apps_for(&e.path);

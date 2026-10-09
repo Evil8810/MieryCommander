@@ -33,6 +33,14 @@ fn candidate_files() -> Vec<PathBuf> {
             files.extend(query(family));
         }
     }
+    #[cfg(windows)]
+    {
+        let fonts = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts");
+        // Chinese, Japanese, Korean, Indian scripts, Thai, symbols, then the rest.
+        for f in ["msyh.ttc", "YuGothM.ttc", "meiryo.ttc", "malgun.ttf", "Nirmala.ttc", "Nirmala.ttf", "LeelawUI.ttf", "seguisym.ttf", "segoeui.ttf", "arial.ttf"] {
+            files.push(fonts.join(f));
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         for f in [
@@ -75,6 +83,11 @@ fn bold_file() -> Option<PathBuf> {
         let out = std::process::Command::new("fc-match").args(["-f", "%{file}", "sans:bold"]).output().ok()?;
         let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
         return p.is_file().then_some(p);
+    }
+    #[cfg(windows)]
+    {
+        let fonts = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts");
+        return ["segoeuib.ttf", "arialbd.ttf"].into_iter().map(|f| fonts.join(f)).find(|p| p.is_file());
     }
     #[cfg(target_os = "macos")]
     {

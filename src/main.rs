@@ -1,3 +1,6 @@
+// Release builds on Windows: no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[macro_use]
 mod i18n;
 mod app;
@@ -20,11 +23,14 @@ mod panel;
 mod rename;
 mod search;
 mod viewer;
+#[cfg(windows)]
+mod winsys;
 
 #[cfg(test)]
 mod tests;
 
 fn main() -> eframe::Result {
+    update::cleanup_old();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("MieryCommander")
