@@ -1108,7 +1108,7 @@ fn branch_view_lists_all_files_of_all_subfolders() {
     names.sort();
     assert_eq!(names, ["oben.txt", "projekt/README.md", "projekt/src/main.rs", "projekt/src/tief/日本語.txt"]);
     // Operations work on the real files: F5 copies the deep file.
-    select(&mut h, "projekt/src/tief/日本語.txt");
+    select(&mut h, &["projekt", "src", "tief", "日本語.txt"].join(std::path::MAIN_SEPARATOR_STR));
     panel_key(&mut h, Key::F5, Modifiers::NONE);
     dialog_input(&mut h, None);
     wait_for_job(&mut h);
