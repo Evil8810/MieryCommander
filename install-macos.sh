@@ -126,7 +126,15 @@ if [ "$want_dmg" = 1 ]; then
     mkdir -p "$staging"
     cp -R "$app" "$staging/"
     ln -s /Applications "$staging/Applications"
-    hdiutil create -volname "MieryCommander" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
+    # hdiutil sometimes fails with "Resource busy" (e.g. on CI machines): try again.
+    for attempt in 1 2 3 4 5; do
+        if hdiutil create -volname "MieryCommander" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null; then
+            break
+        fi
+        [ "$attempt" = 5 ] && exit 1
+        echo "hdiutil: neuer Versuch / retrying ($attempt)…"
+        sleep $((attempt * 3))
+    done
     rm -rf "$staging"
     echo "DMG: $dmg"
 fi
