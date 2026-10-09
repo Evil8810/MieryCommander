@@ -3,6 +3,7 @@ use crate::remote;
 use crate::fsutil::{self, Entry};
 use eframe::egui::{self, Color32, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -159,6 +160,10 @@ pub enum PanelAction {
     Navigate(Location),
     /// A command chosen from a context menu.
     Cmd(crate::app::Cmd),
+    /// "Open with" → this application.
+    OpenWith(crate::openwith::App),
+    /// Files dragged from a panel were dropped here (Shift = move).
+    Drop { from_right: bool, target: Location, is_move: bool },
     NewTab,
     CloseTab(usize),
 }
@@ -777,6 +782,13 @@ fn icon_for(e: &Entry) -> &'static str {
 }
 
 /// Draw one panel. `side` is used to make ids unique.
+/// Files being dragged with the mouse: the selection of one panel.
+#[derive(Clone, Debug)]
+pub struct DragFiles {
+    pub from_right: bool,
+    pub count: usize,
+}
+
 pub fn show_panel(
     ui: &mut egui::Ui,
     panel: &mut Panel,
@@ -1041,6 +1053,9 @@ pub fn show_panel(
     let mut row_double: Option<usize> = None;
     let mut row_ctx: Option<PanelAction> = None;
     let mut row_right_clicked: Option<usize> = None;
+    let mut row_drag_start: Option<usize> = None;
+    let mut row_drop: Option<(Arc<DragFiles>, Location)> = None;
+    let is_right = side == "right";
 
     let scroll_to = if tab.scroll_to_cursor {
         tab.scroll_to_cursor = false;
@@ -1055,7 +1070,7 @@ pub fn show_panel(
         let mut table = TableBuilder::new(ui)
             .id_salt(format!("{side}_table"))
             .striped(true)
-            .sense(Sense::click())
+            .sense(Sense::click_and_drag())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::remainder().at_least(140.0).clip(true))
             .column(Column::initial(55.0).at_least(30.0).resizable(true).clip(true))
@@ -1137,7 +1152,12 @@ pub fn show_panel(
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        ui.add(egui::Label::new(txt(format!("{} {}", icon_for(e), name))).truncate().selectable(false));
+                        let mut label = txt(format!("{} {}", icon_for(e), name));
+                        if e.is_dir {
+                            // Folders in bold: easy to tell apart from files.
+                            label = label.family(crate::fonts::bold());
+                        }
+                        ui.add(egui::Label::new(label).truncate().selectable(false));
                     });
                     row.col(|ui| {
                         ui.add(egui::Label::new(txt(ext.to_string())).selectable(false));
@@ -1164,6 +1184,33 @@ pub fn show_panel(
                         ui.add(egui::Label::new(txt(m).monospace()).selectable(false));
                     });
                     let resp = row.response();
+                    // Drag & drop: rows can be dragged; folders accept drops.
+                    if resp.drag_started() {
+                        row_drag_start = Some(i);
+                        let count = if marked { tab.marked.len() } else { 1 };
+                        if !e.is_parent {
+                            resp.dnd_set_drag_payload(DragFiles { from_right: is_right, count });
+                        }
+                    }
+                    if e.is_dir {
+                        let target = if e.is_parent {
+                            tab.loc.parent_loc()
+                        } else {
+                            match &tab.loc {
+                                Location::Dir(_) => Some(Location::Dir(e.path.clone())),
+                                Location::Ftp { id, .. } => Some(Location::Ftp { id: *id, path: e.path.to_string_lossy().into_owned() }),
+                                Location::Archive { .. } => None,
+                            }
+                        };
+                        if let Some(target) = target {
+                            if resp.dnd_hover_payload::<DragFiles>().is_some() {
+                                drop_hint(&resp.ctx, resp.layer_id, resp.rect);
+                            }
+                            if let Some(p) = resp.dnd_release_payload::<DragFiles>() {
+                                row_drop = Some((p, target));
+                            }
+                        }
+                    }
                     if resp.clicked() {
                         row_clicked = Some((i, resp.ctx.input(|inp| inp.modifiers)));
                     }
@@ -1175,13 +1222,39 @@ pub fn show_panel(
                     }
                     let marked_count = tab.marked.len();
                     resp.context_menu(|ui| {
-                        if let Some(c) = entry_menu(ui, e, &tab.loc, marked_count) {
-                            row_ctx = Some(PanelAction::Cmd(c));
+                        if let Some(a) = entry_menu(ui, e, &tab.loc, marked_count) {
+                            row_ctx = Some(a);
                         }
                     });
                 });
             });
     });
+    // Dropped on empty space or a file: into this panel's folder.
+    if row_drop.is_none() {
+        let r = &background.response;
+        if let Some(p) = r.dnd_hover_payload::<DragFiles>()
+            && p.from_right != is_right
+        {
+            drop_hint(&r.ctx, r.layer_id, r.rect);
+        }
+        if let Some(p) = r.dnd_release_payload::<DragFiles>()
+            && p.from_right != is_right
+        {
+            row_drop = Some((p, tab.loc.clone()));
+        }
+    }
+    if let Some((p, target)) = row_drop {
+        let is_move = ui.input(|i| i.modifiers.shift);
+        actions.push(PanelAction::Drop { from_right: p.from_right, target, is_move });
+    }
+    if let Some(i) = row_drag_start {
+        // Dragging an unmarked entry drags just that one.
+        if tab.entries.get(i).is_some_and(|e| !tab.marked.contains(&e.name)) {
+            tab.marked.clear();
+        }
+        tab.cursor = i;
+        actions.push(PanelAction::Activate);
+    }
     background.response.context_menu(|ui| {
         if let Some(c) = folder_menu(ui, &tab.loc) {
             row_ctx = Some(PanelAction::Cmd(c));
@@ -1267,9 +1340,10 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str, cmd: crate::app::Cm
 }
 
 /// Context menu for a file or folder.
-fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Option<crate::app::Cmd> {
+fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Option<PanelAction> {
     use crate::app::Cmd;
     let mut out = None;
+    let mut chosen_app = None;
     let local = loc.dir().is_some();
     let in_archive = matches!(loc, Location::Archive { .. });
     ui.set_min_width(230.0);
@@ -1279,6 +1353,25 @@ fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Op
     }
     if !e.is_parent {
         menu_item(ui, if e.is_dir { l!("Öffnen", "Open") } else { l!("Öffnen (Standardprogramm)", "Open (default application)") }, "Enter", Cmd::OpenDefault, &mut out);
+        if local {
+            ui.menu_button(l!("Öffnen mit", "Open with"), |ui| {
+                ui.set_min_width(220.0);
+                let apps = crate::openwith::apps_for(&e.path);
+                if apps.is_empty() {
+                    ui.label(RichText::new(l!("Keine passenden Programme gefunden", "No matching applications found")).weak());
+                }
+                for app in apps.into_iter().take(15) {
+                    let label = if app.default { RichText::new(format!("{}  ★", app.name)).strong() } else { RichText::new(&app.name) };
+                    let r = ui.button(label);
+                    if r.clicked() {
+                        chosen_app = Some(app);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                menu_item(ui, l!("Andere Anwendung…", "Other application…"), "", Cmd::OpenWith, &mut out);
+            });
+        }
         if !e.is_dir {
             menu_item(ui, l!("Ansehen", "View"), "F3", Cmd::View, &mut out);
             menu_item(ui, l!("Bearbeiten", "Edit"), "F4", Cmd::Edit, &mut out);
@@ -1342,7 +1435,13 @@ fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Op
     if !e.is_parent {
         menu_item(ui, l!("Eigenschaften", "Properties"), "Alt+Enter", Cmd::Properties, &mut out);
     }
-    out
+    chosen_app.map(PanelAction::OpenWith).or(out.map(PanelAction::Cmd))
+}
+
+/// Frame around a drop target while files are dragged over it.
+fn drop_hint(ctx: &egui::Context, layer: egui::LayerId, rect: egui::Rect) {
+    let color = ctx.global_style().visuals.selection.stroke.color;
+    ctx.layer_painter(layer).rect_stroke(rect, 3.0, egui::Stroke::new(2.0, color), egui::StrokeKind::Inside);
 }
 
 /// Context menu for empty space in a panel (the current folder itself).

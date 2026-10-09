@@ -83,6 +83,14 @@ impl FtpForm {
     }
 }
 
+/// Progress of installing an update.
+pub enum UpdateState {
+    Idle,
+    Running { progress: std::sync::Arc<std::sync::atomic::AtomicU64>, rx: std::sync::mpsc::Receiver<Result<(), String>> },
+    Done,
+    Failed(String),
+}
+
 pub enum Dialog {
     CopyMove {
         is_move: bool,
@@ -102,6 +110,10 @@ pub enum Dialog {
     Pattern { select: bool, mask: String },
     Hotlist,
     History,
+    /// A new version is available.
+    Update { release: crate::update::Release, kind: crate::update::Install, state: UpdateState },
+    /// "Open with": pick an application (or type a command).
+    OpenWith { files: Vec<PathBuf>, filter: String, suggested: Vec<crate::openwith::App>, all: Vec<crate::openwith::App>, command: String },
     Settings,
     Keys,
     Message { title: String, text: String },
@@ -129,6 +141,12 @@ impl Dialog {
                     | f.site.protocol as u8
             }
             Dialog::Properties { pending, .. } => pending.is_some() as u8,
+            Dialog::Update { state, .. } => match state {
+                UpdateState::Idle => 0,
+                UpdateState::Running { .. } => 1,
+                UpdateState::Done => 2,
+                UpdateState::Failed(_) => 3,
+            },
             _ => 0,
         }
     }
@@ -230,7 +248,7 @@ impl MieryApp {
         let max_h = (ctx.content_rect().height() - 80.0).max(200.0);
         // Each kind of dialog gets its own id: egui remembers window and scroll
         // sizes per id, and a small dialog must not shrink the next, bigger one.
-        let kind_id = egui::Id::new(("dialog", std::mem::discriminant(&dialog), dialog.layout_key()));
+        let kind_id = egui::Id::new(("dialog", std::mem::discriminant(&dialog), dialog.layout_key(), self.dialog_serial));
         let modal = egui::Modal::new(kind_id).show(ctx, |ui| {
             ui.set_min_width(460.0);
             egui::ScrollArea::vertical()
@@ -462,6 +480,156 @@ impl MieryApp {
                         outcome = Outcome::Close;
                     }
                 }
+                Dialog::Update { release, kind, state } => {
+                    use crate::update::Install;
+                    ui.heading(lf!("Neue Version: MieryCommander {}", "New version: MieryCommander {}", release.version()));
+                    ui.label(RichText::new(lf!("Installiert ist {}", "Installed: {}", env!("CARGO_PKG_VERSION"))).weak());
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().id_salt("update_notes").max_height(220.0).show(ui, |ui| {
+                        ui.set_min_width(440.0);
+                        ui.label(release.notes(crate::i18n::en()));
+                    });
+                    ui.add_space(6.0);
+                    let asset = crate::update::pick_asset(release, kind).cloned();
+                    let open_page = |url: &str| {
+                        let _ = open::that_detached(url);
+                    };
+                    let mut next = None;
+                    match state {
+                        UpdateState::Idle | UpdateState::Failed(_) => {
+                            if let UpdateState::Failed(e) = state {
+                                ui.colored_label(egui::Color32::from_rgb(200, 60, 60), e.as_str());
+                            }
+                            if *kind == Install::Manual {
+                                ui.label(l!(
+                                    "Dieses Programm wurde selbst gebaut. Aktualisieren mit:
+git pull && cargo build --release",
+                                    "This program was built from source. Update with:
+git pull && cargo build --release"
+                                ));
+                            } else if asset.is_none() {
+                                ui.label(l!("Für dieses System gibt es in diesem Release keinen Download.", "This release has no download for this system."));
+                            }
+                            ui.horizontal(|ui| {
+                                if let Some(a) = &asset
+                                    && kind.can_install()
+                                    && ui.button(RichText::new(lf!("⬇ Jetzt installieren ({})", "⬇ Install now ({})", fsutil::format_size_short(a.size))).strong()).clicked()
+                                {
+                                    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    let (rel, k, p) = (release.clone(), kind.clone(), progress.clone());
+                                    std::thread::spawn(move || {
+                                        let _ = tx.send(crate::update::install(&rel, &k, p));
+                                        fsutil::wake_ui();
+                                    });
+                                    next = Some(UpdateState::Running { progress, rx });
+                                }
+                                if ui.button(l!("Release-Seite öffnen", "Open release page")).clicked() {
+                                    open_page(&release.html_url);
+                                }
+                                if ui.button(l!("Diese Version überspringen", "Skip this version")).clicked() {
+                                    self.cfg.skipped_version = release.version().to_string();
+                                    outcome = Outcome::Close;
+                                }
+                                if ui.button(l!("Später", "Later")).clicked() {
+                                    outcome = Outcome::Close;
+                                }
+                            });
+                        }
+                        UpdateState::Running { progress, rx } => {
+                            let total = asset.as_ref().map_or(1, |a| a.size.max(1));
+                            let done = progress.load(std::sync::atomic::Ordering::Relaxed);
+                            let text = if done >= total {
+                                l!("Installiere…", "Installing…").to_string()
+                            } else {
+                                lf!("Lade herunter… {} von {}", "Downloading… {} of {}", fsutil::format_size_short(done), fsutil::format_size_short(total))
+                            };
+                            ui.add(egui::ProgressBar::new(done as f32 / total as f32).text(text).desired_width(440.0));
+                            match rx.try_recv() {
+                                Ok(Ok(())) => next = Some(UpdateState::Done),
+                                Ok(Err(e)) => next = Some(UpdateState::Failed(e)),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                                Err(_) => next = Some(UpdateState::Failed(l!("Abgebrochen", "Cancelled").into())),
+                            }
+                        }
+                        UpdateState::Done => {
+                            ui.label(RichText::new(l!("✔ Update installiert. Nach einem Neustart läuft die neue Version.", "✔ Update installed. The new version runs after a restart.")).strong());
+                            ui.horizontal(|ui| {
+                                if ui.button(RichText::new(l!("Jetzt neu starten", "Restart now")).strong()).clicked() {
+                                    match crate::update::restart(kind) {
+                                        Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                                        Err(e) => next = Some(UpdateState::Failed(e)),
+                                    }
+                                }
+                                if ui.button(l!("Später", "Later")).clicked() {
+                                    outcome = Outcome::Close;
+                                }
+                            });
+                        }
+                    }
+                    if let Some(n) = next {
+                        *state = n;
+                    }
+                }
+                Dialog::OpenWith { files, filter, suggested, all, command } => {
+                    ui.heading(l!("Öffnen mit", "Open with"));
+                    let what = if files.len() == 1 {
+                        format!("„{}“", files[0].file_name().unwrap_or_default().to_string_lossy())
+                    } else {
+                        lf!("{} Dateien", "{} files", files.len())
+                    };
+                    ui.label(RichText::new(what).weak());
+                    ui.add_space(4.0);
+                    let r = ui.add(egui::TextEdit::singleline(filter).hint_text(l!("🔍 Programm suchen…", "🔍 Search application…")).desired_width(f32::INFINITY));
+                    if fresh {
+                        r.request_focus();
+                    }
+                    let needle = filter.to_lowercase();
+                    let matches = |a: &&crate::openwith::App| needle.is_empty() || a.name.to_lowercase().contains(&needle);
+                    let mut chosen = None;
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        ui.set_min_width(380.0);
+                        let rec: Vec<_> = suggested.iter().filter(matches).collect();
+                        if !rec.is_empty() {
+                            ui.label(RichText::new(l!("Empfohlen", "Recommended")).strong());
+                            for a in rec {
+                                let label = if a.default { format!("{}  ★", a.name) } else { a.name.clone() };
+                                if ui.selectable_label(false, label).clicked() {
+                                    chosen = Some(a.clone());
+                                }
+                            }
+                            ui.separator();
+                        }
+                        ui.label(RichText::new(l!("Alle Programme", "All applications")).strong());
+                        for a in all.iter().filter(matches) {
+                            if ui.selectable_label(false, &a.name).on_hover_text(&a.exec).clicked() {
+                                chosen = Some(a.clone());
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(l!("Befehl:", "Command:"));
+                        let r = ui.add(egui::TextEdit::singleline(command).hint_text(l!("z. B. gimp oder code -n", "e.g. gimp or code -n")).desired_width(240.0));
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        if (ui.add_enabled(!command.trim().is_empty(), egui::Button::new(l!("Starten", "Run"))).clicked() || enter) && !command.trim().is_empty() {
+                            chosen = Some(crate::openwith::custom(command));
+                        }
+                    });
+                    // Enter in the search field: the first match.
+                    if chosen.is_none() && command.is_empty() && !filter.is_empty() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        chosen = suggested.iter().chain(all.iter()).find(|a| matches(a)).cloned();
+                    }
+                    if ui.button(l!("Abbrechen", "Cancel")).clicked() {
+                        outcome = Outcome::Close;
+                    }
+                    if let Some(app) = chosen {
+                        if let Err(e) = crate::openwith::launch(&app, files) {
+                            self.notify(e, true);
+                        }
+                        outcome = Outcome::Close;
+                    }
+                }
                 Dialog::Hotlist => {
                     ui.heading(l!("Ordner-Favoriten", "Favourite folders"));
                     let mut go = None;
@@ -568,9 +736,25 @@ impl MieryApp {
                         });
                         ui.end_row();
                         ui.label(l!("Schriftgröße:", "Font size:"));
-                        if ui.add(egui::Slider::new(&mut self.cfg.font_scale, 0.7..=2.0).step_by(0.05)).changed() {
-                            ctx.set_zoom_factor(self.cfg.font_scale);
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button(" − ").on_hover_text(crate::i18n::keys("Strg+-")).clicked() {
+                                self.cfg.font_scale = crate::app::step_font(self.cfg.font_scale, -1);
+                            }
+                            ui.label(RichText::new(format!("{:.0} %", self.cfg.font_scale * 100.0)).strong());
+                            if ui.button(" + ").on_hover_text(crate::i18n::keys("Strg++")).clicked() {
+                                self.cfg.font_scale = crate::app::step_font(self.cfg.font_scale, 1);
+                            }
+                            if ui.button(l!("Normal", "Normal")).on_hover_text(crate::i18n::keys("Strg+0")).clicked() {
+                                self.cfg.font_scale = 1.0;
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut self.cfg.auto_scale, l!("Automatisch an Bildschirmgröße und Auflösung anpassen", "Adapt to screen size and resolution automatically"))
+                            .on_hover_text(l!("Auf großen, hochauflösenden Monitoren, die das System nicht selbst skaliert (z. B. 4K bei 100 %), wird alles passend vergrößert", "On big high-resolution monitors the system doesn't scale itself (e.g. 4K at 100 %) everything is enlarged to match"));
+                        ui.end_row();
+                        ui.label(l!("Updates:", "Updates:"));
+                        ui.checkbox(&mut self.cfg.check_updates, l!("Beim Start nach einer neuen Version suchen (fragt GitHub)", "Look for a new version at start (asks GitHub)"));
                         ui.end_row();
                     });
                     if reload {
@@ -1081,6 +1265,8 @@ fn keys_table() -> Vec<(&'static str, &'static str)> {
     ("+ / - / *", l!("Gruppe markieren / abwählen / umkehren", "Select / deselect / invert group")),
     ("Buchstaben tippen", l!("Schnellsuche nach Namen", "Quick search by name")),
     ("Strg+C / Strg+X / Strg+V", l!("Kopieren / Ausschneiden / Einfügen (auch mit Dolphin & Co.)", "Copy / cut / paste (also with Dolphin & co.)")),
+    ("Shift+Enter", l!("Öffnen mit… (Programm wählen)", "Open with… (choose an application)")),
+    ("Strg++ / Strg+- / Strg+0", l!("Schrift größer / kleiner / normal (auch Strg+Mausrad)", "Bigger / smaller / normal font (also Ctrl+mouse wheel)")),
     ("Rechtsklick", l!("Kontextmenü (auf freier Fläche: Einfügen, Neuer Ordner, …)", "Context menu (on empty space: paste, new folder, …)")),
     ("F3", l!("Ansehen (Text/Hex/Bild)", "View (text/hex/image)")),
     ("F4 / Shift+F4", l!("Bearbeiten / Neue Datei", "Edit / New file")),

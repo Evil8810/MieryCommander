@@ -54,14 +54,51 @@ fn candidate_files() -> Vec<PathBuf> {
     files
 }
 
+/// Font family for folder names (bold when the system has a bold font).
+pub fn bold() -> FontFamily {
+    FontFamily::Name("bold".into())
+}
+
+/// egui's defaults plus the "bold" family (until a bold font is loaded it
+/// uses the normal font, so it always exists).
+pub fn defaults() -> FontDefinitions {
+    let mut defs = FontDefinitions::default();
+    let normal = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    defs.families.insert(bold(), normal);
+    defs
+}
+
+/// A bold sans-serif font of the system.
+fn bold_file() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let out = std::process::Command::new("fc-match").args(["-f", "%{file}", "sans:bold"]).output().ok()?;
+        let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        return p.is_file().then_some(p);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return ["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file());
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 /// Font definitions = egui defaults + system fallbacks for other scripts.
 pub fn with_fallbacks() -> FontDefinitions {
-    let mut defs = FontDefinitions::default();
+    let mut defs = defaults();
+    if let Some(bytes) = bold_file().and_then(|f| std::fs::read(f).ok()) {
+        defs.font_data.insert("system-bold".into(), Arc::new(FontData::from_owned(bytes)));
+        defs.families.entry(bold()).or_default().insert(0, "system-bold".into());
+    }
     for (i, file) in candidate_files().into_iter().enumerate() {
         let Ok(bytes) = std::fs::read(&file) else { continue };
         let name = format!("system-fallback-{i}");
         defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        for family in [FontFamily::Proportional, FontFamily::Monospace, bold()] {
             defs.families.entry(family).or_default().push(name.clone());
         }
     }
@@ -70,6 +107,7 @@ pub fn with_fallbacks() -> FontDefinitions {
 
 /// Load the fallbacks in the background and switch to them when ready.
 pub fn install_in_background(ctx: &egui::Context) {
+    ctx.set_fonts(defaults());
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         let defs = with_fallbacks();

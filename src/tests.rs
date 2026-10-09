@@ -1406,3 +1406,119 @@ fn english_user_interface() {
         h.render().unwrap().save(out).unwrap();
     }
 }
+
+/// Drag a file with the mouse from one panel to the other, and onto a folder.
+#[test]
+fn drag_and_drop_between_panels() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("bild.png"), "x").unwrap();
+    fs::create_dir(l.path().join("Ziel")).unwrap();
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+
+    let drag = |h: &mut Harness<'_, MieryApp>, from: eframe::egui::Pos2, to: eframe::egui::Pos2, shift: bool| {
+        let mods = if shift { Modifiers::SHIFT } else { Modifiers::NONE };
+        let button = |pos, pressed| Event::PointerButton { pos, button: eframe::egui::PointerButton::Primary, pressed, modifiers: mods };
+        h.event(Event::ModifiersChanged(mods));
+        h.event(Event::PointerMoved(from));
+        steps(h, 1);
+        h.event(button(from, true));
+        steps(h, 1);
+        for k in 1..=8 {
+            h.event(Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
+            steps(h, 1);
+        }
+        h.event(button(to, false));
+        steps(h, 2);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        steps(h, 1);
+    };
+
+    // File → empty space of the right panel: copy dialog into the right folder.
+    let from = h.get_by_label_contains("bild").rect().center();
+    let to = eframe::egui::pos2(900.0, 500.0);
+    drag(&mut h, from, to, false);
+    match &h.state().dialog {
+        Some(Dialog::CopyMove { is_move, sources, target, .. }) => {
+            assert!(!is_move);
+            assert_eq!(sources, &[l.path().join("bild.png")]);
+            assert_eq!(target.trim_end_matches('/'), r.path().to_string_lossy());
+        }
+        _ => panic!("drop on the other panel should open the copy dialog"),
+    }
+    h.state_mut().dialog = None;
+    steps(&mut h, 2);
+
+    // With Shift onto the folder "Ziel" in the same panel: move into it.
+    let from = h.get_by_label_contains("bild").rect().center();
+    let to = h.get_by_label_contains("Ziel").rect().center();
+    drag(&mut h, from, to, true);
+    match &h.state().dialog {
+        Some(Dialog::CopyMove { is_move, target, .. }) => {
+            assert!(is_move, "Shift moves");
+            assert_eq!(target.trim_end_matches('/'), l.path().join("Ziel").to_string_lossy());
+        }
+        _ => panic!("drop on a folder should open the move dialog"),
+    }
+}
+
+#[test]
+fn font_size_steps_and_auto_scale() {
+    use crate::app::{auto_scale, step_font};
+    assert_eq!(step_font(1.0, 1), 1.1);
+    assert_eq!(step_font(1.0, -1), 0.9);
+    assert_eq!(step_font(2.5, 1), 2.5);
+    assert_eq!(step_font(0.6, -1), 0.6);
+    // Full HD and laptops stay at 100 %, 4K at 100 % system scaling grows.
+    assert_eq!(auto_scale(eframe::egui::vec2(1920.0, 1080.0)), 1.0);
+    assert_eq!(auto_scale(eframe::egui::vec2(1512.0, 982.0)), 1.0);
+    assert_eq!(auto_scale(eframe::egui::vec2(3840.0, 2160.0)), 1.75);
+    assert_eq!(auto_scale(eframe::egui::vec2(3440.0, 1440.0)), 1.15); // ultrawide: by height
+}
+
+/// The update dialog and the "Open with" dialog fit and show their buttons.
+#[test]
+fn update_and_open_with_dialogs() {
+    use egui_kittest::kittest::Queryable;
+    let release: crate::update::Release = serde_json::from_str(
+        r###"{"tag_name":"v9.0.0","html_url":"https://example.invalid/r","body":"## Deutsch\n\n- Neu: vieles\n\n## English\n\n- New: lots",
+            "assets":[{"name":"MieryCommander-9.0.0-x86_64.AppImage","browser_download_url":"https://example.invalid/a","size":15000000}]}"###,
+    )
+    .unwrap();
+    let shot = std::env::var("MIERY_DIALOG_SHOTS").ok();
+    let mut h = harness();
+    steps(&mut h, 2);
+    for (i, kind) in [crate::update::Install::AppImage("/x/M.AppImage".into()), crate::update::Install::Manual].into_iter().enumerate() {
+        h.state_mut().open_dialog(Dialog::Update { release: release.clone(), kind, state: crate::dialogs::UpdateState::Idle });
+        steps(&mut h, 3);
+        assert!(h.query_by_label_contains("Neu: vieles").is_some());
+        assert!(h.query_by_label("Später").is_some());
+        if let Some(dir) = &shot {
+            h.render().unwrap().save(format!("{dir}/update-{i}.png")).unwrap();
+        }
+    }
+    assert!(h.query_by_label_contains("git pull").is_some(), "self-built: hint instead of install");
+    h.get_by_label("Diese Version überspringen").click();
+    steps(&mut h, 2);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(h.state().cfg.skipped_version, "9.0.0");
+
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("notiz.txt");
+    fs::write(&f, "x").unwrap();
+    let app = |n: &str| crate::openwith::App { name: n.into(), exec: format!("{} %F", n.to_lowercase()), default: n == "Kate" };
+    h.state_mut().open_dialog(Dialog::OpenWith {
+        files: vec![f],
+        filter: String::new(),
+        suggested: vec![app("Kate"), app("KWrite")],
+        all: vec![app("Firefox"), app("Gwenview"), app("Kate"), app("KWrite")],
+        command: String::new(),
+    });
+    steps(&mut h, 3);
+    if let Some(dir) = &shot {
+        h.render().unwrap().save(format!("{dir}/openwith.png")).unwrap();
+    }
+    assert!(h.query_by_label("Kate  ★").is_some());
+    assert!(h.query_by_label("Firefox").is_some());
+}

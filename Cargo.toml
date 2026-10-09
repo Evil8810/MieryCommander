@@ -29,6 +29,7 @@ tar = "0.4.46"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "io-util", "fs"] }
 trash = "5.2.9"
 unrar = "0.5.8"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip", "json"] }
 webpki-roots = "1.0.9"
 zip = "8.6.0"
 zstd = "0.13"

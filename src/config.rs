@@ -23,7 +23,14 @@ pub struct Config {
     /// Command used for "Open terminal". Empty = auto-detect.
     pub terminal: String,
     pub theme: ThemeChoice,
+    /// Font size chosen by the user (1.0 = normal), on top of `auto_scale`.
     pub font_scale: f32,
+    /// Enlarge everything on big, high-resolution monitors.
+    pub auto_scale: bool,
+    /// Look for a new version on GitHub at start.
+    pub check_updates: bool,
+    /// A version the user doesn't want to be told about again.
+    pub skipped_version: String,
     pub drive_bar: DriveBar,
     pub language: crate::i18n::LangChoice,
     pub hotlist: Vec<PathBuf>,
@@ -47,6 +54,9 @@ impl Default for Config {
             terminal: String::new(),
             theme: ThemeChoice::System,
             font_scale: 1.0,
+            auto_scale: true,
+            check_updates: true,
+            skipped_version: String::new(),
             drive_bar: DriveBar::Both,
             language: crate::i18n::LangChoice::System,
             hotlist: Vec::new(),

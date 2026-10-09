@@ -84,6 +84,12 @@ pub enum Cmd {
     SyncDirs,
     UnpackHere,
     UnpackSmart,
+    FontBigger,
+    FontSmaller,
+    FontReset,
+    /// "Open with" → choose any application.
+    OpenWith,
+    CheckUpdates,
 }
 
 /// What to do once a download for F3/F4/Enter on an FTP file has finished.
@@ -108,6 +114,9 @@ pub struct MieryApp {
     pub right_active: bool,
     pub dialog: Option<Dialog>,
     pub dialog_fresh: bool,
+    /// Counts opened dialogs: every dialog is measured afresh, so one with
+    /// different content never inherits the (too small) size of the last.
+    pub dialog_serial: u64,
     pub job: Option<Job>,
     pub viewers: Vec<Viewer>,
     pub compares: Vec<crate::compare::CompareWindow>,
@@ -128,6 +137,15 @@ pub struct MieryApp {
     pub ftp_edits: Vec<FtpEdit>,
     pub(crate) ftp_ops: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     startup_frames: u8,
+    /// Zoom factor currently applied (font size × automatic monitor scale).
+    applied_zoom: f32,
+    /// Automatic scale for the monitor, worked out once per system scale
+    /// factor: (system scale, factor).
+    auto_factor: Option<(f32, f32)>,
+    /// Running update check (`true` = asked for by the user).
+    update_check: Option<(bool, std::sync::mpsc::Receiver<Result<Option<crate::update::Release>, String>>)>,
+    /// A found update, shown as soon as no other dialog is open.
+    pending_update: Option<crate::update::Release>,
     applied_language: Option<crate::i18n::LangChoice>,
     /// SMB share being made available (kio-fuse / gio / Finder).
     pub smb_mounting: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
@@ -140,7 +158,10 @@ impl MieryApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         fsutil::set_ui_context(&cc.egui_ctx);
+        // Ctrl+Plus/Minus/0 are handled by us (they also change the saved setting).
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         crate::fonts::install_in_background(&cc.egui_ctx);
+        crate::openwith::warm_up();
         let cfg: Config = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
@@ -159,16 +180,18 @@ impl MieryApp {
         } else {
             cfg.right_tabs.clone()
         };
+        // Look for a new version in the background (never in tests).
+        let check_updates = cfg.check_updates && !cfg!(test);
         let left = Panel::new(&left_paths, cfg.left_active, cfg.show_hidden, cfg.dirs_first);
         let right = Panel::new(&right_paths, cfg.right_active, cfg.show_hidden, cfg.dirs_first);
-        cc.egui_ctx.set_zoom_factor(cfg.font_scale.clamp(0.6, 2.5));
-        MieryApp {
+        let mut app = MieryApp {
             cfg,
             left,
             right,
             right_active: false,
             dialog: None,
             dialog_fresh: false,
+            dialog_serial: 0,
             job: None,
             viewers: Vec::new(),
             compares: Vec::new(),
@@ -190,10 +213,18 @@ impl MieryApp {
             ftp_ops: Vec::new(),
             ftp_connecting: None,
             startup_frames: 0,
+            applied_zoom: 0.0,
+            auto_factor: None,
+            update_check: None,
+            pending_update: None,
             applied_language: None,
             smb_mounting: None,
             clip: None,
+        };
+        if check_updates {
+            app.start_update_check(false);
         }
+        app
     }
 
     pub fn active(&mut self) -> &mut Panel {
@@ -223,6 +254,7 @@ impl MieryApp {
     pub fn open_dialog(&mut self, d: Dialog) {
         self.dialog = Some(d);
         self.dialog_fresh = true;
+        self.dialog_serial += 1;
     }
 
     pub fn reload_all(&mut self) {
@@ -345,6 +377,19 @@ impl MieryApp {
                 {
                     self.notify(err, true);
                 }
+            }
+            Cmd::CheckUpdates => {
+                self.notify(l!("Suche nach Updates…", "Checking for updates…"), false);
+                self.start_update_check(true);
+            }
+            Cmd::OpenWith => {
+                let files = self.open_with_files();
+                if files.is_empty() {
+                    self.notify(l!("„Öffnen mit“ geht nur mit lokalen Dateien", "“Open with” only works with local files"), true);
+                    return;
+                }
+                let suggested = crate::openwith::apps_for(&files[0]);
+                self.open_dialog(Dialog::OpenWith { files, filter: String::new(), suggested, all: crate::openwith::all_apps(), command: String::new() });
             }
             Cmd::NewFile => {
                 if local {
@@ -562,6 +607,14 @@ impl MieryApp {
             Cmd::DeselectPattern => self.open_dialog(Dialog::Pattern { select: false, mask: "*.*".into() }),
             Cmd::CompareDirs => self.compare_dirs(),
             Cmd::Settings => self.open_dialog(Dialog::Settings),
+            Cmd::FontBigger | Cmd::FontSmaller | Cmd::FontReset => {
+                self.cfg.font_scale = match cmd {
+                    Cmd::FontBigger => step_font(self.cfg.font_scale, 1),
+                    Cmd::FontSmaller => step_font(self.cfg.font_scale, -1),
+                    _ => 1.0,
+                };
+                self.notify(lf!("Schriftgröße {:.0} %", "Font size {:.0} %", self.cfg.font_scale * 100.0), false);
+            }
             Cmd::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::Properties => {
                 if let Some(e) = self.active_ref().tab().current().cloned()
@@ -656,6 +709,15 @@ impl MieryApp {
                 None => self.notify(l!("Das aktive Panel ist mit keinem Server verbunden", "The active panel is not connected to a server"), true),
             },
         }
+    }
+
+    /// Files for "Open with": the selection in a local folder (not "..").
+    pub fn open_with_files(&self) -> Vec<PathBuf> {
+        let tab = self.active_ref().tab();
+        if tab.loc.dir().is_none() {
+            return Vec::new();
+        }
+        tab.selection().into_iter().filter(|e| !e.is_parent).map(|e| e.path).collect()
     }
 
     /// Which two files to compare: two marked files in the active panel, or
@@ -925,13 +987,18 @@ impl MieryApp {
     }
 
     fn prepare_copy_move(&mut self, cmd: Cmd) {
+        let other_loc = self.other_ref().tab().loc.clone();
+        self.prepare_copy_move_to(cmd, other_loc);
+    }
+
+    /// F5/F6 dialog for the active panel's selection into `other_loc`.
+    fn prepare_copy_move_to(&mut self, cmd: Cmd, other_loc: Location) {
         let tab = self.active_ref().tab();
         let sel = tab.selection();
         if sel.is_empty() {
             return;
         }
         let is_move = cmd == Cmd::Move;
-        let other_loc = self.other_ref().tab().loc.clone();
         let sources: Vec<PathBuf> = sel.iter().map(|e| e.path.clone()).collect();
         let dirs: Vec<PathBuf> = sel.iter().filter(|e| e.is_dir).map(|e| e.path.clone()).collect();
         let with_slash = |mut t: String| {
@@ -1124,6 +1191,7 @@ impl MieryApp {
                     None
                 }
                 (Key::Enter, false, false, true) => Some(Cmd::Properties),
+                (Key::Enter, false, true, false) => Some(Cmd::OpenWith),
                 (Key::Enter, true, false, false) => Some(Cmd::NameToCmdline),
                 (Key::Backspace, false, false, false) => {
                     let t = self.active().tab_mut();
@@ -1215,6 +1283,10 @@ impl MieryApp {
                 (Key::G, true, false, false) => Some(Cmd::TakeOtherDir),
                 (Key::B, true, true, false) => Some(Cmd::BranchView),
                 (Key::Comma, true, false, false) => Some(Cmd::Settings),
+                // Font size like in browsers (Shift allowed: "+" needs it on some layouts).
+                (Key::Plus, true, _, false) => Some(Cmd::FontBigger),
+                (Key::Minus, true, false, false) => Some(Cmd::FontSmaller),
+                (Key::Num0, true, false, false) => Some(Cmd::FontReset),
                 (Key::ArrowDown, false, false, true) => Some(Cmd::History),
                 (Key::ArrowLeft, false, false, true) => Some(Cmd::Back),
                 (Key::ArrowRight, false, false, true) => Some(Cmd::Forward),
@@ -1306,6 +1378,7 @@ impl MieryApp {
                 item(ui, l!("Bearbeiten", "Edit"), "F4", Cmd::Edit);
                 item(ui, l!("Neue Datei", "New file"), "Shift+F4", Cmd::NewFile);
                 item(ui, l!("Öffnen mit Standardprogramm", "Open with default application"), "", Cmd::OpenDefault);
+                item(ui, l!("Öffnen mit…", "Open with…"), "Shift+Enter", Cmd::OpenWith);
                 ui.separator();
                 item(ui, l!("Ausschneiden", "Cut"), "Strg+X", Cmd::ClipCut);
                 item(ui, l!("In Zwischenablage kopieren", "Copy to clipboard"), "Strg+C", Cmd::ClipCopy);
@@ -1362,6 +1435,15 @@ impl MieryApp {
                 item(ui, l!("Schnellfilter", "Quick filter"), "Strg+S", Cmd::Filter);
                 item(ui, l!("Versteckte Dateien", "Hidden files"), "Strg+H", Cmd::ToggleHidden);
                 item(ui, l!("Branch-View (alle Unterordner)", "Branch view (all subfolders)"), "Strg+Shift+B", Cmd::BranchView);
+                ui.menu_button(l!("Schriftgröße", "Font size"), |ui| {
+                    item(ui, l!("Größer", "Bigger"), "Strg++", Cmd::FontBigger);
+                    item(ui, l!("Kleiner", "Smaller"), "Strg+-", Cmd::FontSmaller);
+                    item(ui, l!("Normal (100 %)", "Normal (100 %)"), "Strg+0", Cmd::FontReset);
+                    ui.separator();
+                    ui.checkbox(&mut self.cfg.auto_scale, l!("An Bildschirm anpassen", "Adapt to screen"))
+                        .on_hover_text(l!("Auf großen, hochauflösenden Monitoren, die das System nicht selbst skaliert (z. B. 4K bei 100 %), wird alles passend vergrößert", "On big high-resolution monitors the system doesn't scale itself (e.g. 4K at 100 %) everything is enlarged to match"));
+                    ui.label(RichText::new(l!("Auch: Strg + Mausrad", "Also: Ctrl + mouse wheel")).small().weak());
+                });
                 ui.menu_button(l!("Laufwerksleiste", "Drive bar"), |ui| {
                     use crate::config::DriveBar;
                     for (mode, label) in [
@@ -1389,6 +1471,7 @@ impl MieryApp {
             });
             ui.menu_button(l!("Hilfe", "Help"), |ui| {
                 item(ui, l!("Tastenkürzel", "Keyboard shortcuts"), "", Cmd::Keys);
+                item(ui, l!("Nach Updates suchen…", "Check for updates…"), "", Cmd::CheckUpdates);
                 item(ui, l!("Über", "About"), "", Cmd::About);
             });
         });
@@ -1427,6 +1510,8 @@ impl MieryApp {
             b(ui, "↔", l!("Panels tauschen (Strg+U)", "Swap panels (Ctrl+U)"), Cmd::Swap);
             b(ui, "🖳", "Terminal (F9)", Cmd::Terminal);
             ui.separator();
+            b(ui, "A-", l!("Schrift kleiner (Strg+-)", "Smaller font (Ctrl+-)"), Cmd::FontSmaller);
+            b(ui, "A+", l!("Schrift größer (Strg++)", "Bigger font (Ctrl++)"), Cmd::FontBigger);
             b(ui, "⚙", l!("Einstellungen", "Settings"), Cmd::Settings);
         });
         cmd
@@ -1638,6 +1723,22 @@ impl MieryApp {
                     self.open_entry(i, ctx);
                 }
                 PanelAction::Cmd(c) => self.run(c, ctx),
+                PanelAction::Drop { from_right, target, is_move } => {
+                    // The dragged files are the source panel's selection.
+                    self.right_active = from_right;
+                    let sources: Vec<PathBuf> = self.active_ref().tab().selection().into_iter().map(|e| e.path).collect();
+                    let into_itself = sources.iter().any(|s| target.dir().is_some_and(|t| t.starts_with(s)) || target == Location::Dir(s.clone()));
+                    let same_place = self.active_ref().tab().loc == target;
+                    if !sources.is_empty() && !into_itself && !same_place {
+                        self.prepare_copy_move_to(if is_move { Cmd::Move } else { Cmd::Copy }, target);
+                    }
+                }
+                PanelAction::OpenWith(app) => {
+                    let files = self.open_with_files();
+                    if let Err(e) = crate::openwith::launch(&app, &files) {
+                        self.notify(e, true);
+                    }
+                }
                 PanelAction::NewTab => self.run(Cmd::NewTab, ctx),
                 PanelAction::CloseTab(i) => {
                     let p = self.active();
@@ -1657,6 +1758,75 @@ impl MieryApp {
         if self.applied_language != Some(self.cfg.language) {
             self.applied_language = Some(self.cfg.language);
             crate::i18n::apply(self.cfg.language);
+        }
+    }
+
+    pub fn start_update_check(&mut self, manual: bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::update::check());
+            fsutil::wake_ui();
+        });
+        self.update_check = Some((manual, rx));
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        if let Some((manual, rx)) = &self.update_check {
+            let manual = *manual;
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.update_check = None;
+                    match result {
+                        Ok(Some(rel)) if manual || rel.version() != self.cfg.skipped_version => self.pending_update = Some(rel),
+                        Ok(_) if manual => self.notify(
+                            lf!("MieryCommander {} ist aktuell", "MieryCommander {} is up to date", env!("CARGO_PKG_VERSION")),
+                            false,
+                        ),
+                        Err(e) if manual => self.notify(e, true),
+                        _ => {}
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
+                Err(_) => self.update_check = None,
+            }
+        }
+        if self.dialog.is_none()
+            && let Some(release) = self.pending_update.take()
+        {
+            let kind = crate::update::install_kind();
+            self.open_dialog(Dialog::Update { release, kind, state: crate::dialogs::UpdateState::Idle });
+        }
+    }
+
+    /// Font size × automatic scale for big monitors; Ctrl+mouse wheel zooms too.
+    fn apply_zoom(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_none() && self.viewers.is_empty() {
+            let (zoom, ctrl) = ctx.input(|i| (i.zoom_delta(), i.modifiers.command));
+            if ctrl && (zoom - 1.0).abs() > 0.001 {
+                self.cfg.font_scale = (self.cfg.font_scale * zoom).clamp(FONT_MIN, FONT_MAX);
+            }
+        }
+        // egui reports the monitor size divided by the zoom of an earlier
+        // frame; measuring it again after every zoom change would feed back
+        // into itself and flicker. So it is measured once per system scale
+        // factor – while our zoom is unchanged – and then kept.
+        let (monitor, native) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().native_pixels_per_point));
+        if let (Some(m), Some(n)) = (monitor, native)
+            && self.auto_factor.is_none_or(|(old, _)| (old - n).abs() > 0.001)
+            && (self.applied_zoom == 0.0 || (ctx.zoom_factor() - self.applied_zoom).abs() < 0.001)
+        {
+            // A system that already scales (e.g. 150 %) has chosen the size itself.
+            let f = if n > 1.05 { 1.0 } else { auto_scale(m * ctx.zoom_factor()) };
+            self.auto_factor = Some((n, f));
+        }
+        let auto = match self.auto_factor {
+            Some((_, f)) if self.cfg.auto_scale => f,
+            _ => 1.0,
+        };
+        let target = (self.cfg.font_scale.clamp(FONT_MIN, FONT_MAX) * auto * 100.0).round() / 100.0;
+        if (target - self.applied_zoom).abs() > 0.001 {
+            self.applied_zoom = target;
+            ctx.set_zoom_factor(target);
         }
     }
 
@@ -1706,6 +1876,23 @@ impl MieryApp {
             });
         }
     }
+}
+
+const FONT_MIN: f32 = 0.6;
+const FONT_MAX: f32 = 2.5;
+
+/// Ctrl+Plus / Ctrl+Minus: next font size in 10 % steps.
+pub fn step_font(scale: f32, dir: i32) -> f32 {
+    let steps = (scale * 10.0).round() as i32 + dir;
+    (steps as f32 / 10.0).clamp(FONT_MIN, FONT_MAX)
+}
+
+/// Extra scale for big screens the system doesn't scale: a 4K monitor at
+/// 100 % has about twice the points of a Full-HD one, so text would be tiny.
+/// `size` is the monitor size in the system's points.
+pub fn auto_scale(size: egui::Vec2) -> f32 {
+    let f = (size.x / 2200.0).min(size.y / 1240.0).clamp(1.0, 2.0);
+    (f * 20.0).round() / 20.0
 }
 
 impl eframe::App for MieryApp {
@@ -1760,9 +1947,11 @@ impl eframe::App for MieryApp {
         }
         self.apply_language();
         self.apply_theme(&ctx);
+        self.apply_zoom(&ctx);
         self.handle_keys(&ctx);
         self.handle_dropped_files(&ctx);
         self.poll_ftp(&ctx);
+        self.poll_update(&ctx);
 
         let (h, d) = (self.cfg.show_hidden, self.cfg.dirs_first);
         self.left.tab_mut().poll_changes(h, d);
@@ -1862,6 +2051,25 @@ impl eframe::App for MieryApp {
         }
         if self.rename.show(&ctx) {
             self.reload_all();
+        }
+
+        // While dragging files: what is dragged and what a drop will do.
+        if let Some(p) = egui::DragAndDrop::payload::<panel::DragFiles>(&ctx)
+            && let Some(pos) = ctx.pointer_latest_pos()
+        {
+            let shift = ctx.input(|i| i.modifiers.shift);
+            let text = if shift {
+                lf!("📄 {} Element(e) verschieben", "📄 Move {} item(s)", p.count)
+            } else {
+                lf!("📄 {} Element(e) kopieren  (Shift = verschieben)", "📄 Copy {} item(s)  (Shift = move)", p.count)
+            };
+            egui::Area::new(egui::Id::new("drag_label"))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(pos + egui::vec2(16.0, 12.0))
+                .interactable(false)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(text));
+                });
         }
 
         self.job_window(&ctx);
