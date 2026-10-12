@@ -142,7 +142,27 @@ pub struct Tab {
     list_rx: Receiver<Listing>,
     pending_select: Option<String>,
     loaded_loc: Option<Location>,
+    /// The name being edited right in the list (second click on the name).
+    pub rename: Option<InlineRename>,
+    /// A click on the name of the already selected entry: renaming starts
+    /// when no second click (double-click = open) follows.
+    rename_armed: Option<(usize, PathBuf, Instant)>,
 }
+
+/// Renaming an entry in place, in its row.
+#[derive(Clone, Debug)]
+pub struct InlineRename {
+    pub index: usize,
+    pub path: PathBuf,
+    pub original: String,
+    pub text: String,
+    is_dir: bool,
+    /// First frame: take the keyboard focus and select the name without extension.
+    focus: bool,
+}
+
+/// How long to wait for a second click before a click on the name starts renaming.
+const RENAME_CLICK_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Result of a background directory read.
 struct Listing {
@@ -162,6 +182,8 @@ pub enum PanelAction {
     Cmd(crate::app::Cmd),
     /// "Open with" → this application.
     OpenWith(crate::openwith::App),
+    /// The name edited in the list was confirmed.
+    RenameTo { from: PathBuf, name: String },
     /// Files dragged from a panel were dropped here (Shift = move).
     Drop { from_right: bool, target: Location, is_move: bool },
     NewTab,
@@ -203,6 +225,8 @@ impl Tab {
             list_tx,
             list_rx,
             pending_select: None,
+            rename: None,
+            rename_armed: None,
             loaded_loc: None,
         };
         t.reload(show_hidden, dirs_first);
@@ -210,6 +234,15 @@ impl Tab {
     }
 
     /// A tab that opens directly at `loc` (also a server or an archive).
+    /// Edit the name of entry `i` right in the list.
+    pub fn start_rename(&mut self, i: usize) {
+        let Some(e) = self.entries.get(i).filter(|e| !e.is_parent) else { return };
+        // (in the branch view the name is a relative path: only the file name is edited)
+        let name = e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| e.name.clone());
+        self.rename = Some(InlineRename { index: i, path: e.path.clone(), original: name.clone(), text: name, is_dir: e.is_dir, focus: true });
+        self.rename_armed = None;
+    }
+
     pub fn new_at(loc: Location, show_hidden: bool, dirs_first: bool) -> Self {
         let mut t = Tab::new(loc.real_dir(), show_hidden, dirs_first);
         if t.loc != loc {
@@ -1049,7 +1082,23 @@ pub fn show_panel(
     let table_h = (ui.available_height() - status_h).max(50.0);
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
     let mut sort_click: Option<SortKey> = None;
-    let mut row_clicked: Option<(usize, egui::Modifiers)> = None;
+    let mut row_clicked: Option<(usize, egui::Modifiers, bool)> = None;
+    // Renaming in the list: start it once the wait for a double-click is over.
+    if let Some((i, path, since)) = tab.rename_armed.clone() {
+        let still_there = tab.cursor == i && tab.entries.get(i).is_some_and(|e| e.path == path);
+        if !is_active || !still_there {
+            tab.rename_armed = None;
+        } else if since.elapsed() >= RENAME_CLICK_DELAY {
+            tab.rename_armed = None;
+            tab.start_rename(i);
+        } else {
+            ui.ctx().request_repaint_after(RENAME_CLICK_DELAY - since.elapsed());
+        }
+    }
+    // Taken out while the table is drawn (the rows borrow the tab).
+    let mut renaming = tab.rename.take().filter(|rn| tab.entries.get(rn.index).is_some_and(|e| e.path == rn.path));
+    // Some(true) = accept the new name, Some(false) = give up.
+    let mut rename_done: Option<bool> = None;
     let mut row_double: Option<usize> = None;
     let mut row_ctx: Option<PanelAction> = None;
     let mut row_right_clicked: Option<usize> = None;
@@ -1142,7 +1191,31 @@ pub fn show_panel(
                     } else {
                         stem.to_string()
                     };
-                    row.col(|ui| {
+                    let (name_rect, _) = row.col(|ui| {
+                        if let Some(rn) = renaming.as_mut().filter(|rn| rn.index == i) {
+                            let id = egui::Id::new((side, "inline_rename"));
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut rn.text)
+                                    .id(id)
+                                    .desired_width(f32::INFINITY)
+                                    .margin(egui::Margin::symmetric(2, 0)),
+                            );
+                            if rn.focus {
+                                rn.focus = false;
+                                r.request_focus();
+                                // Like other file managers: the name is selected, the extension is not.
+                                let stem = fsutil::split_ext(&rn.text, rn.is_dir).0.chars().count();
+                                let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                                let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem));
+                                state.cursor.set_char_range(Some(range));
+                                egui::TextEdit::store_state(ui.ctx(), id, state);
+                            } else if r.lost_focus() {
+                                // Enter or a click somewhere else accepts; Esc (or anything else) gives up.
+                                let (enter, clicked) = ui.input(|inp| (inp.key_pressed(egui::Key::Enter), inp.pointer.any_pressed()));
+                                rename_done = Some(enter || clicked);
+                            }
+                            return;
+                        }
                         if is_cursor && !is_active {
                             let r = ui.max_rect();
                             ui.painter().rect_stroke(
@@ -1212,7 +1285,8 @@ pub fn show_panel(
                         }
                     }
                     if resp.clicked() {
-                        row_clicked = Some((i, resp.ctx.input(|inp| inp.modifiers)));
+                        let on_name = resp.interact_pointer_pos().is_some_and(|p| name_rect.contains(p));
+                        row_clicked = Some((i, resp.ctx.input(|inp| inp.modifiers), on_name));
                     }
                     if resp.double_clicked() {
                         row_double = Some(i);
@@ -1275,7 +1349,28 @@ pub fn show_panel(
         }
         actions.push(PanelAction::Activate);
     }
-    if let Some((i, mods)) = row_clicked {
+    // Inline rename finished?
+    if let Some(accept) = rename_done
+        && let Some(rn) = renaming.take()
+    {
+        let name = rn.text.trim().to_string();
+        if accept && !name.is_empty() && name != rn.original {
+            actions.push(PanelAction::RenameTo { from: rn.path, name });
+        }
+    }
+    tab.rename = renaming;
+    if row_double.is_some() || row_right_clicked.is_some() || row_drag_start.is_some() {
+        tab.rename_armed = None;
+    }
+    if let Some((i, mods, on_name)) = row_clicked {
+        // A plain click on the name of the entry that is selected already
+        // (in the active panel) starts renaming – unless a double-click follows.
+        let renamable = matches!(tab.loc, Location::Dir(_) | Location::Ftp { .. }) && !tab.branch;
+        let again = is_active && i == tab.cursor && on_name && mods.is_none() && row_double.is_none() && tab.rename.is_none();
+        tab.rename_armed = match tab.entries.get(i) {
+            Some(e) if again && renamable && !e.is_parent => Some((i, e.path.clone(), Instant::now())),
+            _ => None,
+        };
         if mods.command {
             tab.toggle_mark(i);
         } else if mods.shift {

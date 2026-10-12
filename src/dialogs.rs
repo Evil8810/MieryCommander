@@ -15,6 +15,30 @@ pub enum CopyMode {
     Upload { conn: usize },
     /// `dirs`: which of the sources are directories.
     Download { conn: usize, dirs: Vec<PathBuf> },
+    /// Copying local files into an archive (ZIP/TAR). The folder inside the
+    /// archive is taken from the target text (see `inner_from_target`).
+    ArchiveAdd { archive: PathBuf },
+    /// From one server to another (or within one); `dirs` as for `Download`.
+    RemoteCopy { from: usize, to: usize, dirs: Vec<PathBuf> },
+}
+
+/// The folder inside the archive from the text of the copy dialog:
+/// "/x/a.zip/bilder/2024" → "bilder/2024/". `None` when the text no longer
+/// points into the archive (or tries to leave it with "..").
+pub fn inner_from_target(archive: &Path, target: &str) -> Option<String> {
+    let rest = target.trim().strip_prefix(archive.to_string_lossy().as_ref())?;
+    if !(rest.is_empty() || rest.starts_with(['/', '\\'])) {
+        return None; // "a.zipx/…" is a different file
+    }
+    let mut parts = Vec::new();
+    for part in rest.split(['/', '\\']) {
+        match part.trim() {
+            "" | "." => {}
+            ".." => return None,
+            p => parts.push(p),
+        }
+    }
+    Some(if parts.is_empty() { String::new() } else { format!("{}/", parts.join("/")) })
 }
 
 /// State of the FTP connect dialog.
@@ -105,7 +129,8 @@ pub enum Dialog {
     Mkdir { name: String },
     NewFile { name: String },
     Rename { from: PathBuf, name: String, ftp: Option<usize> },
-    Delete { paths: Vec<PathBuf>, permanent: bool, ftp: Option<(usize, Vec<PathBuf>)> },
+    /// `archive`: the paths are members of this archive.
+    Delete { paths: Vec<PathBuf>, permanent: bool, ftp: Option<(usize, Vec<PathBuf>)>, archive: Option<PathBuf> },
     Pack { sources: Vec<PathBuf>, target: String },
     Pattern { select: bool, mask: String },
     Hotlist,
@@ -265,6 +290,10 @@ impl MieryApp {
                         (CopyMode::Download { .. }, true) => l!("Herunterladen & vom Server löschen", "Download & delete on server"),
                         (CopyMode::Local, true) => l!("Verschieben", "Move"),
                         (CopyMode::Local, false) => l!("Kopieren", "Copy"),
+                        (CopyMode::ArchiveAdd { .. }, false) => l!("In Archiv kopieren", "Copy into archive"),
+                        (CopyMode::ArchiveAdd { .. }, true) => l!("In Archiv verschieben", "Move into archive"),
+                        (CopyMode::RemoteCopy { .. }, false) => l!("Kopieren (Server → Server)", "Copy (server → server)"),
+                        (CopyMode::RemoteCopy { .. }, true) => l!("Verschieben (Server → Server)", "Move (server → server)"),
                     };
                     ui.heading(verb);
                     let what = if matches!(mode, CopyMode::Extract { .. }) && sources.len() == 1 && sources[0].as_os_str().is_empty() {
@@ -275,15 +304,35 @@ impl MieryApp {
                         lf!("{} Elemente", "{} items", sources.len())
                     };
                     let where_ = match &*mode {
-                        CopyMode::Upload { conn } => remote::get(*conn).map(|c| lf!(" auf {}", " on {}", c.url())).unwrap_or_default(),
+                        CopyMode::Upload { conn } | CopyMode::RemoteCopy { to: conn, .. } => {
+                            remote::get(*conn).map(|c| lf!(" auf {}", " on {}", c.url())).unwrap_or_default()
+                        }
                         _ => String::new(),
                     };
                     ui.label(lf!("{what} nach{where_}:", "{what} to{where_}:"));
                     let r = focused_field(ui, target, fresh);
+                    match &*mode {
+                        CopyMode::ArchiveAdd { .. } => {
+                            ui.label(RichText::new(l!("Das Archiv wird dabei neu geschrieben; das Original wird erst am Ende ersetzt.", "The archive is rewritten; the original is only replaced at the end.")).small().weak());
+                        }
+                        CopyMode::RemoteCopy { from, to, .. } if from != to => {
+                            ui.label(RichText::new(l!("Die Dateien laufen über diesen Computer (herunter- und wieder hochladen).", "The files travel through this computer (download, then upload).")).small().weak());
+                        }
+                        _ => {}
+                    }
                     let (ok, cancel) = ok_cancel(ui, verb);
                     if cancel {
                         outcome = Outcome::Close;
                     } else if ok && (r.lost_focus() || !r.has_focus()) {
+                        // The target must still point into the archive.
+                        let archive_inner = match &*mode {
+                            CopyMode::ArchiveAdd { archive, .. } => Some(inner_from_target(archive, target)),
+                            _ => None,
+                        };
+                        if archive_inner == Some(None) {
+                            // Stays open: nothing is started with a wrong target.
+                            self.notify(l!("Das Ziel liegt nicht mehr im Archiv – bitte den Pfad hinter dem Archivnamen ändern", "The target is no longer inside the archive – please change the path after the archive name"), true);
+                        } else {
                         let srcs = std::mem::take(sources);
                         let (kind, dest) = match mode {
                             CopyMode::Local => {
@@ -302,9 +351,18 @@ impl MieryApp {
                                 JobKind::Download { conn: *conn, dirs: std::mem::take(dirs), delete_source: *is_move },
                                 resolve(&base_dir, target),
                             ),
+                            CopyMode::ArchiveAdd { archive, .. } => (
+                                JobKind::ArchiveAdd { archive: archive.clone(), inner: archive_inner.flatten().unwrap_or_default(), delete_source: *is_move },
+                                PathBuf::new(),
+                            ),
+                            CopyMode::RemoteCopy { from, to, dirs } => (
+                                JobKind::RemoteCopy { from: *from, to: *to, dirs: std::mem::take(dirs), delete_source: *is_move },
+                                PathBuf::from(target.trim()),
+                            ),
                         };
                         self.start_job(kind, srcs, dest, ctx);
                         outcome = Outcome::Close;
+                        }
                     }
                 }
                 Dialog::FtpConnect(form) => {
@@ -375,15 +433,7 @@ impl MieryApp {
                     if cancel {
                         outcome = Outcome::Close;
                     } else if ok && (r.lost_focus() || !r.has_focus()) {
-                        let from = from.to_string_lossy().into_owned();
-                        let to = remote::join(&remote::parent(&from).unwrap_or_else(|| "/".into()), name.trim());
-                        let id = *id;
-                        if to != from {
-                            self.spawn_ftp_op(move || {
-                                let c = remote::get(id).ok_or(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed"))?;
-                                c.rename(&from, &to).map(|_| l!("Umbenannt", "Renamed").to_string())
-                            });
-                        }
+                        self.rename_entry(from, name, Some(*id));
                         outcome = Outcome::Close;
                     }
                 }
@@ -395,23 +445,14 @@ impl MieryApp {
                     if cancel {
                         outcome = Outcome::Close;
                     } else if ok && (r.lost_focus() || !r.has_focus()) {
-                        let target = from.with_file_name(name.trim());
-                        if target != *from {
-                            if target.exists() {
-                                self.notify(lf!("{} existiert bereits", "{} already exists", target.to_string_lossy()), true);
-                            } else if let Err(e) = std::fs::rename(&*from, &target) {
-                                self.notify(lf!("Umbenennen: {e}", "Rename: {e}"), true);
-                            } else {
-                                self.reload_all();
-                                let n = name.trim().to_string();
-                                self.active().tab_mut().select_name(&n);
-                            }
-                        }
+                        self.rename_entry(from, name, None);
                         outcome = Outcome::Close;
                     }
                 }
-                Dialog::Delete { paths, permanent, ftp } => {
-                    ui.heading(if ftp.is_some() {
+                Dialog::Delete { paths, permanent, ftp, archive } => {
+                    ui.heading(if archive.is_some() {
+                        l!("Aus Archiv löschen", "Delete from archive")
+                    } else if ftp.is_some() {
                         l!("Vom Server löschen", "Delete from server")
                     } else if *permanent {
                         l!("Endgültig löschen", "Delete permanently")
@@ -431,9 +472,10 @@ impl MieryApp {
                         outcome = Outcome::Close;
                     } else if ok {
                         let p = std::mem::take(paths);
-                        match ftp.take() {
-                            Some((conn, dirs)) => self.start_job(JobKind::FtpDelete { conn, dirs }, p, PathBuf::new(), ctx),
-                            None => self.start_job(JobKind::Delete { to_trash: !*permanent }, p, PathBuf::new(), ctx),
+                        match (archive.take(), ftp.take()) {
+                            (Some(archive), _) => self.start_job(JobKind::ArchiveDelete { archive }, p, PathBuf::new(), ctx),
+                            (None, Some((conn, dirs))) => self.start_job(JobKind::FtpDelete { conn, dirs }, p, PathBuf::new(), ctx),
+                            (None, None) => self.start_job(JobKind::Delete { to_trash: !*permanent }, p, PathBuf::new(), ctx),
                         }
                         outcome = Outcome::Close;
                     }
@@ -1265,6 +1307,7 @@ fn keys_table() -> Vec<(&'static str, &'static str)> {
     ("+ / - / *", l!("Gruppe markieren / abwählen / umkehren", "Select / deselect / invert group")),
     ("Buchstaben tippen", l!("Schnellsuche nach Namen", "Quick search by name")),
     ("Strg+C / Strg+X / Strg+V", l!("Kopieren / Ausschneiden / Einfügen (auch mit Dolphin & Co.)", "Copy / cut / paste (also with Dolphin & co.)")),
+    ("Klick auf den Namen", l!("Markierte Datei direkt in der Liste umbenennen (Enter übernimmt, Esc bricht ab)", "Rename the selected file right in the list (Enter accepts, Esc cancels)")),
     ("Shift+Enter", l!("Öffnen mit… (Programm wählen)", "Open with… (choose an application)")),
     ("Strg++ / Strg+- / Strg+0", l!("Schrift größer / kleiner / normal (auch Strg+Mausrad)", "Bigger / smaller / normal font (also Ctrl+mouse wheel)")),
     ("Rechtsklick", l!("Kontextmenü (auf freier Fläche: Einfügen, Neuer Ordner, …)", "Context menu (on empty space: paste, new folder, …)")),

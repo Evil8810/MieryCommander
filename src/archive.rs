@@ -506,17 +506,7 @@ pub fn pack<'a>(
         Kind::Zip => {
             let mut zw = zip::ZipWriter::new(out);
             for (path, name, is_dir) in list {
-                let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{name}: {e}"))?;
-                let opts = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated)
-                    .unix_permissions(crate::fsutil::mode_of(&meta) & 0o7777)
-                    .large_file(meta.len() > u32::MAX as u64);
-                if *is_dir {
-                    zw.add_directory(format!("{name}/"), opts).map_err(|e| format!("{name}: {e}"))?;
-                } else {
-                    zw.start_file(name.clone(), opts).map_err(|e| format!("{name}: {e}"))?;
-                    io::copy(&mut read_file(path).map_err(|e| format!("{name}: {e}"))?, &mut zw).map_err(|e| format!("{name}: {e}"))?;
-                }
+                zip_add(&mut zw, path, name, *is_dir, read_file)?;
             }
             zw.finish().map_err(|e| e.to_string())?;
         }
@@ -524,16 +514,7 @@ pub fn pack<'a>(
             let mut builder = tar::Builder::new(compressor(out, comp).map_err(|e| e.to_string())?);
             builder.follow_symlinks(false);
             for (path, name, is_dir) in list {
-                let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
-                let mut header = tar::Header::new_gnu();
-                header.set_metadata(&meta);
-                if *is_dir {
-                    header.set_size(0);
-                    builder.append_data(&mut header, format!("{name}/"), io::empty()).map_err(|e| format!("{name}: {e}"))?;
-                } else {
-                    let data = read_file(path).map_err(|e| format!("{name}: {e}"))?;
-                    builder.append_data(&mut header, name, data).map_err(|e| format!("{name}: {e}"))?;
-                }
+                tar_add(&mut builder, path, name, *is_dir, read_file)?;
             }
             let mut w = builder.into_inner().map_err(|e| e.to_string())?;
             w.flush().map_err(|e| e.to_string())?;
@@ -556,6 +537,180 @@ pub fn pack<'a>(
         Kind::Single(_) => return Err(l!("Bitte ein Archivformat wählen (.zip, .7z, .tar.gz …)", "Please choose an archive format (.zip, .7z, .tar.gz …)").into()),
     }
     Ok(())
+}
+
+/// One file or folder from disk into a zip that is being written.
+fn zip_add<'a>(
+    zw: &mut zip::ZipWriter<File>,
+    path: &Path,
+    name: &str,
+    is_dir: bool,
+    read_file: &mut dyn FnMut(&Path) -> io::Result<Box<dyn Read + 'a>>,
+) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{name}: {e}"))?;
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(crate::fsutil::mode_of(&meta) & 0o7777)
+        .large_file(meta.len() > u32::MAX as u64);
+    if is_dir {
+        zw.add_directory(format!("{name}/"), opts).map_err(|e| format!("{name}: {e}"))?;
+    } else {
+        zw.start_file(name, opts).map_err(|e| format!("{name}: {e}"))?;
+        io::copy(&mut read_file(path).map_err(|e| format!("{name}: {e}"))?, zw).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// One file or folder from disk into a tar that is being written.
+fn tar_add<'a, W: Write>(
+    builder: &mut tar::Builder<W>,
+    path: &Path,
+    name: &str,
+    is_dir: bool,
+    read_file: &mut dyn FnMut(&Path) -> io::Result<Box<dyn Read + 'a>>,
+) -> Result<(), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&meta);
+    if is_dir {
+        header.set_size(0);
+        builder.append_data(&mut header, format!("{name}/"), io::empty()).map_err(|e| format!("{name}: {e}"))?;
+    } else {
+        let data = read_file(path).map_err(|e| format!("{name}: {e}"))?;
+        builder.append_data(&mut header, name, data).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Archives whose content can be changed (files added or deleted).
+pub fn can_modify(path: &Path) -> bool {
+    matches!(kind_of(path), Some(Kind::Zip | Kind::Tar(_)))
+}
+
+/// Why an archive of this kind can't be changed (for the status line).
+pub fn cannot_modify_reason(path: &Path) -> String {
+    match kind_of(path) {
+        Some(Kind::Rar) => l!("RAR-Archive können nur gelesen werden", "RAR archives can only be read").into(),
+        Some(Kind::SevenZ) => l!("7z-Archive können nicht geändert werden – nur ZIP und TAR. Bitte neu packen (Alt+F5)", "7z archives can't be changed – only ZIP and TAR. Please pack again (Alt+F5)").into(),
+        _ => l!("Dieses Archiv kann nicht geändert werden – nur ZIP und TAR", "This archive can't be changed – only ZIP and TAR").into(),
+    }
+}
+
+/// Temporary file next to the archive (same folder, so the final rename is atomic).
+fn rewrite_temp(archive: &Path) -> PathBuf {
+    let name = archive.file_name().unwrap_or_default().to_string_lossy();
+    archive.with_file_name(format!(".{name}.miery-tmp"))
+}
+
+/// Change an archive: drop the members in `remove` (a folder includes its
+/// content) and add the files in `add`; a member with the name of an added
+/// file is replaced. Everything else is taken over unchanged.
+///
+/// The new archive is written to a temporary file next to the original and
+/// only replaces it at the very end – on an error or when cancelled the
+/// original stays exactly as it was. Returns `Ok(false)` when cancelled.
+pub fn rewrite<'a>(
+    archive: &Path,
+    remove: &[String],
+    add: &PackList,
+    read_file: &mut dyn FnMut(&Path) -> io::Result<Box<dyn Read + 'a>>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    let kind = kind_of(archive).filter(|_| can_modify(archive)).ok_or_else(|| cannot_modify_reason(archive))?;
+    let temp = rewrite_temp(archive);
+    let result = rewrite_into(archive, kind, &temp, remove, add, read_file, cancelled);
+    match result {
+        Ok(true) => {
+            // Keep the original's permissions, then swap.
+            if let Ok(meta) = std::fs::metadata(archive) {
+                let _ = std::fs::set_permissions(&temp, meta.permissions());
+            }
+            std::fs::rename(&temp, archive).map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                format!("{}: {e}", archive.display())
+            })?;
+            Ok(true)
+        }
+        other => {
+            let _ = std::fs::remove_file(&temp);
+            other
+        }
+    }
+}
+
+fn rewrite_into<'a>(
+    archive: &Path,
+    kind: Kind,
+    temp: &Path,
+    remove: &[String],
+    add: &PackList,
+    read_file: &mut dyn FnMut(&Path) -> io::Result<Box<dyn Read + 'a>>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", archive.display());
+    // An old member goes away when it is deleted or replaced by a new one of
+    // the same name. (Adding a folder never removes what is already in it.)
+    let dropped = |path: &str| selected(path, remove) || add.iter().any(|(_, name, _)| name == path);
+    let old = File::open(archive).map_err(|e| err(&e))?;
+    let out = File::create(temp).map_err(|e| format!("{}: {e}", temp.display()))?;
+    match kind {
+        Kind::Zip => {
+            let mut zip = zip::ZipArchive::new(old).map_err(|e| err(&e))?;
+            let mut zw = zip::ZipWriter::new(out);
+            for i in 0..zip.len() {
+                if cancelled() {
+                    return Ok(false);
+                }
+                let f = zip.by_index_raw(i).map_err(|e| err(&e))?;
+                // Members with unsafe names ("../x") are not shown; they are kept as they are.
+                if clean_path(f.name()).is_some_and(|p| dropped(&p)) {
+                    continue;
+                }
+                // Copied as stored: no unpacking and re-compressing.
+                zw.raw_copy_file(f).map_err(|e| err(&e))?;
+            }
+            for (path, name, is_dir) in add {
+                if cancelled() {
+                    return Ok(false);
+                }
+                zip_add(&mut zw, path, name, *is_dir, read_file)?;
+            }
+            zw.finish().map_err(|e| e.to_string())?;
+        }
+        Kind::Tar(comp) => {
+            let mut tar = tar::Archive::new(decompress(old, comp).map_err(|e| err(&e))?);
+            let mut builder = tar::Builder::new(compressor(out, comp).map_err(|e| e.to_string())?);
+            builder.follow_symlinks(false);
+            for entry in tar.entries().map_err(|e| err(&e))? {
+                if cancelled() {
+                    return Ok(false);
+                }
+                let mut entry = entry.map_err(|e| err(&e))?;
+                let path = entry.path().map_err(|e| err(&e))?.into_owned();
+                if clean_path(&path.to_string_lossy()).is_some_and(|p| dropped(&p)) {
+                    continue;
+                }
+                let mut header = entry.header().clone();
+                let link = entry.link_name().ok().flatten().map(|l| l.into_owned());
+                let t = header.entry_type();
+                match link {
+                    Some(target) if t.is_symlink() || t.is_hard_link() => builder.append_link(&mut header, &path, &target),
+                    _ => builder.append_data(&mut header, &path, &mut entry),
+                }
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+            for (path, name, is_dir) in add {
+                if cancelled() {
+                    return Ok(false);
+                }
+                tar_add(&mut builder, path, name, *is_dir, read_file)?;
+            }
+            let mut w = builder.into_inner().map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())?;
+        }
+        _ => return Err(cannot_modify_reason(archive)),
+    }
+    Ok(!cancelled())
 }
 
 #[cfg(test)]
@@ -584,5 +739,125 @@ mod tests {
         assert!(!needs_own_folder(&[it("eine_datei.txt")]));
         assert!(needs_own_folder(&[it("a.txt"), it("b.txt")]));
         assert!(needs_own_folder(&[it("proj/a"), it("readme")]));
+    }
+
+    fn open_plain<'a>(p: &Path) -> io::Result<Box<dyn Read + 'a>> {
+        Ok(Box::new(File::open(p)?))
+    }
+
+    /// All files of an archive as path → content, read with the format
+    /// crates directly (independent of our own index/extract code).
+    fn contents(archive: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        match kind_of(archive).unwrap() {
+            Kind::Zip => {
+                let mut zip = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
+                for i in 0..zip.len() {
+                    let mut f = zip.by_index(i).unwrap();
+                    if f.is_dir() {
+                        continue;
+                    }
+                    let mut data = Vec::new();
+                    f.read_to_end(&mut data).unwrap();
+                    assert!(out.insert(f.name().to_string(), data).is_none(), "duplicate member {}", f.name());
+                }
+            }
+            Kind::Tar(comp) => {
+                let mut tar = tar::Archive::new(decompress(File::open(archive).unwrap(), comp).unwrap());
+                for e in tar.entries().unwrap() {
+                    let mut e = e.unwrap();
+                    if !e.header().entry_type().is_file() {
+                        continue;
+                    }
+                    let name = e.path().unwrap().to_string_lossy().into_owned();
+                    let mut data = Vec::new();
+                    e.read_to_end(&mut data).unwrap();
+                    assert!(out.insert(name.clone(), data).is_none(), "duplicate member {name}");
+                }
+            }
+            _ => unreachable!(),
+        }
+        out
+    }
+
+    #[test]
+    fn rewrite_adds_replaces_and_deletes() {
+        for ext in ["zip", "tar.gz", "tar"] {
+            let d = tempfile::tempdir().unwrap();
+            let src = d.path().join("src");
+            std::fs::create_dir_all(src.join("dir/sub")).unwrap();
+            let big: Vec<u8> = (0..200_000u32).map(|i| (i * 31 % 251) as u8).collect();
+            std::fs::write(src.join("a.txt"), "alt a").unwrap();
+            std::fs::write(src.join("dir/b.txt"), "alt b").unwrap();
+            std::fs::write(src.join("dir/sub/c.txt"), "alt c").unwrap();
+            std::fs::write(src.join("keep.bin"), &big).unwrap();
+            let archive = d.path().join(format!("test.{ext}"));
+            let list: PackList = vec![
+                (src.join("a.txt"), "a.txt".into(), false),
+                (src.join("dir"), "dir".into(), true),
+                (src.join("dir/b.txt"), "dir/b.txt".into(), false),
+                (src.join("dir/sub"), "dir/sub".into(), true),
+                (src.join("dir/sub/c.txt"), "dir/sub/c.txt".into(), false),
+                (src.join("keep.bin"), "keep.bin".into(), false),
+            ];
+            pack(&archive, &list, &mut open_plain).unwrap();
+            assert_eq!(contents(&archive).len(), 4, "{ext}");
+
+            // New files: one new, one replacing "dir/b.txt", one into a new subfolder.
+            std::fs::write(src.join("neu.txt"), "neu").unwrap();
+            std::fs::write(src.join("b_neu.txt"), "NEU b, länger als vorher").unwrap();
+            let add: PackList = vec![
+                (src.join("neu.txt"), "neu.txt".into(), false),
+                (src.join("b_neu.txt"), "dir/b.txt".into(), false),
+                (src.join("neu.txt"), "dir/extra/neu2.txt".into(), false),
+            ];
+            let remove = vec!["a.txt".to_string(), "dir/sub".to_string()];
+            assert_eq!(rewrite(&archive, &remove, &add, &mut open_plain, &|| false), Ok(true), "{ext}");
+
+            let got = contents(&archive);
+            let names: Vec<&str> = got.keys().map(String::as_str).collect();
+            assert_eq!(names, ["dir/b.txt", "dir/extra/neu2.txt", "keep.bin", "neu.txt"], "{ext}");
+            assert_eq!(got["dir/b.txt"], "NEU b, länger als vorher".as_bytes(), "{ext}: replaced, not duplicated");
+            assert_eq!(got["keep.bin"], big, "{ext}: untouched member is byte-identical");
+            assert_eq!(got["neu.txt"], b"neu");
+            // Our own index sees the same (and the cache noticed the change).
+            let mut idx: Vec<String> = index(&archive).unwrap().iter().filter(|i| !i.is_dir).map(|i| i.path.clone()).collect();
+            idx.sort();
+            assert_eq!(idx, names, "{ext}");
+            assert!(!rewrite_temp(&archive).exists(), "{ext}: no temporary file left");
+        }
+    }
+
+    #[test]
+    fn rewrite_leaves_the_original_alone_on_cancel_and_error() {
+        for ext in ["zip", "tar.gz"] {
+            let d = tempfile::tempdir().unwrap();
+            let f = d.path().join("a.txt");
+            std::fs::write(&f, "inhalt").unwrap();
+            let archive = d.path().join(format!("test.{ext}"));
+            pack(&archive, &vec![(f.clone(), "a.txt".into(), false)], &mut open_plain).unwrap();
+            let before = std::fs::read(&archive).unwrap();
+            let leftovers = || std::fs::read_dir(d.path()).unwrap().count();
+            let files_before = leftovers();
+
+            // Cancelled right away.
+            assert_eq!(rewrite(&archive, &["a.txt".into()], &Vec::new(), &mut open_plain, &|| true), Ok(false));
+            assert_eq!(std::fs::read(&archive).unwrap(), before, "{ext}: cancelled");
+            assert_eq!(leftovers(), files_before, "{ext}: no temporary file after cancel");
+
+            // A source file that doesn't exist: error, nothing changed.
+            let add: PackList = vec![(d.path().join("gibt_es_nicht.txt"), "x.txt".into(), false)];
+            assert!(rewrite(&archive, &["a.txt".into()], &add, &mut open_plain, &|| false).is_err());
+            assert_eq!(std::fs::read(&archive).unwrap(), before, "{ext}: failed");
+            assert_eq!(leftovers(), files_before, "{ext}: no temporary file after an error");
+        }
+        // Formats that can't be changed are refused before anything is written.
+        let d = tempfile::tempdir().unwrap();
+        let seven = d.path().join("x.7z");
+        std::fs::write(&seven, "kein echtes Archiv").unwrap();
+        assert!(!can_modify(&seven) && !can_modify(Path::new("x.rar")) && can_modify(Path::new("x.tar.zst")));
+        assert!(rewrite(&seven, &[], &Vec::new(), &mut open_plain, &|| false).is_err());
+        assert_eq!(std::fs::read_to_string(&seven).unwrap(), "kein echtes Archiv");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 }

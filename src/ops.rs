@@ -33,6 +33,13 @@ pub enum JobKind {
     Unpack { smart: bool },
     /// Synchronize directories: run the planned copy/delete operations.
     Sync { ops: Vec<crate::sync::Op>, to_trash: bool },
+    /// Add local `sources` to `archive`, into its folder `inner` ("" or "dir/").
+    ArchiveAdd { archive: PathBuf, inner: String, delete_source: bool },
+    /// Delete `sources` (paths inside the archive) from `archive`.
+    ArchiveDelete { archive: PathBuf },
+    /// Copy remote `sources` of connection `from` into the remote dir `dest`
+    /// of connection `to` (`dirs`: which sources are directories).
+    RemoteCopy { from: usize, to: usize, dirs: Vec<PathBuf>, delete_source: bool },
 }
 
 impl JobKind {
@@ -48,6 +55,11 @@ impl JobKind {
             JobKind::FtpDelete { .. } => l!("Löschen (FTP)", "Delete (FTP)"),
             JobKind::Sync { .. } => l!("Synchronisieren", "Synchronize"),
             JobKind::Unpack { .. } => l!("Entpacken", "Unpack"),
+            JobKind::ArchiveAdd { delete_source: false, .. } => l!("In Archiv kopieren", "Copy into archive"),
+            JobKind::ArchiveAdd { delete_source: true, .. } => l!("In Archiv verschieben", "Move into archive"),
+            JobKind::ArchiveDelete { .. } => l!("Aus Archiv löschen", "Delete from archive"),
+            JobKind::RemoteCopy { delete_source: false, .. } => l!("Server → Server kopieren", "Copy server → server"),
+            JobKind::RemoteCopy { delete_source: true, .. } => l!("Server → Server verschieben", "Move server → server"),
         }
     }
 }
@@ -249,6 +261,12 @@ impl Worker {
             JobKind::FtpDelete { conn, dirs } => match remote::get(*conn) {
                 Some(c) => self.ftp_delete(c.as_ref(), sources, dirs),
                 None => self.err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
+            },
+            JobKind::ArchiveAdd { archive, inner, delete_source } => self.archive_add(archive, inner, sources, *delete_source),
+            JobKind::ArchiveDelete { archive } => self.archive_delete(archive, sources),
+            JobKind::RemoteCopy { from, to, dirs, delete_source } => match (remote::get(*from), remote::get(*to)) {
+                (Some(a), Some(b)) => self.remote_copy(a.as_ref(), b.as_ref(), sources, dirs, &dest.to_string_lossy(), *delete_source),
+                _ => self.err(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed").into()),
             },
         }
     }
@@ -560,6 +578,148 @@ impl Worker {
         }
     }
 
+    /// Copy (or move) local files and folders into an existing archive.
+    fn archive_add(&mut self, archive_path: &Path, inner: &str, sources: &[PathBuf], delete_source: bool) {
+        // What is in the archive already: path → is it a folder?
+        let existing: HashMap<String, (bool, Option<SystemTime>)> = match archive::index(archive_path) {
+            Ok(items) => items.iter().map(|i| (i.path.clone(), (i.is_dir, i.modified))).collect(),
+            Err(e) => return self.err(e),
+        };
+        // A folder also exists when only files below it are stored ("a/b.txt" → "a").
+        let is_folder = |path: &str| {
+            existing.get(path).is_some_and(|(d, _)| *d) || existing.keys().any(|k| k.starts_with(&format!("{path}/")))
+        };
+        // Collect (path, name inside the archive, is_dir) like for packing.
+        let mut list: archive::PackList = Vec::new();
+        for src in sources {
+            let base = src.parent().unwrap_or(Path::new("/")).to_path_buf();
+            let mut stack = vec![src.clone()];
+            while let Some(p) = stack.pop() {
+                let rel = p.strip_prefix(&base).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                let name = format!("{inner}{rel}");
+                let Ok(meta) = fs::symlink_metadata(&p) else {
+                    self.err(lf!("{}: nicht lesbar", "{}: not readable", p.to_string_lossy()));
+                    continue;
+                };
+                if meta.is_dir() {
+                    if existing.get(&name).is_some_and(|(d, _)| !*d) {
+                        self.err(lf!("{name}: im Archiv gibt es schon eine Datei mit diesem Namen", "{name}: the archive already has a file with this name"));
+                        continue; // and nothing below it
+                    }
+                    // An existing folder is merged: no second folder entry.
+                    if !existing.contains_key(&name) {
+                        list.push((p.clone(), name, true));
+                    }
+                    if let Ok(rd) = fs::read_dir(&p) {
+                        let mut children: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+                        children.sort();
+                        stack.extend(children.into_iter().rev());
+                    }
+                } else if meta.is_file() {
+                    if is_folder(&name) {
+                        self.err(lf!("{name}: im Archiv gibt es schon einen Ordner mit diesem Namen", "{name}: the archive already has a folder with this name"));
+                        continue;
+                    }
+                    list.push((p, name, false));
+                }
+            }
+        }
+        // Files that exist in the archive: ask (overwrite / skip / rename).
+        let mut taken: std::collections::HashSet<String> = existing.keys().cloned().collect();
+        taken.extend(list.iter().map(|(_, n, _)| n.clone()));
+        let mut kept: archive::PackList = Vec::new();
+        for (path, name, is_dir) in list {
+            if self.cancelled() {
+                return;
+            }
+            let Some((false, old_mtime)) = existing.get(&name).copied().filter(|_| !is_dir) else {
+                kept.push((path, name, is_dir));
+                continue;
+            };
+            let new_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let newer = matches!((new_mtime, old_mtime), (Some(a), Some(b)) if a > b);
+            let label = PathBuf::from(format!("{}/{name}", archive_path.display()));
+            match self.decide(&path, &label, newer) {
+                Decision::Skip => {}
+                Decision::Write => kept.push((path, name, false)), // replaces the old member
+                Decision::Rename => {
+                    let (dir, file) = match name.rfind('/') {
+                        Some(i) => (&name[..=i], &name[i + 1..]),
+                        None => ("", name.as_str()),
+                    };
+                    let (stem, ext) = crate::fsutil::split_ext(file, false);
+                    let free = (2..)
+                        .map(|i| if ext.is_empty() { format!("{dir}{stem} ({i})") } else { format!("{dir}{stem} ({i}).{ext}") })
+                        .find(|n| !taken.contains(n))
+                        .unwrap();
+                    taken.insert(free.clone());
+                    kept.push((path, free, false));
+                }
+            }
+        }
+        let list = kept;
+        let files = list.iter().filter(|(_, _, d)| !d).count() as u64;
+        let bytes = list.iter().filter(|(_, _, d)| !d).filter_map(|(p, _, _)| fs::metadata(p).ok()).map(|m| m.len()).sum();
+        self.set_totals(files, bytes);
+        if list.is_empty() {
+            return; // everything skipped: the archive is not touched at all
+        }
+        let worker: &Worker = self;
+        let mut open = |p: &Path| -> std::io::Result<Box<dyn Read + '_>> {
+            worker.set_current(p);
+            Ok(Box::new(ProgressReader { inner: File::open(p)?, worker }))
+        };
+        let r = archive::rewrite(archive_path, &[], &list, &mut open, &|| worker.cancelled());
+        match r {
+            Ok(true) => {
+                self.progress.lock().unwrap().files_done = files;
+                if delete_source {
+                    // Only what really went into the archive; folders only when they ended up empty.
+                    let mut dirs: Vec<&PathBuf> = Vec::new();
+                    for (p, _, is_dir) in &list {
+                        if *is_dir {
+                            dirs.push(p);
+                        } else if let Err(e) = fs::remove_file(p) {
+                            self.err(format!("{}: {e}", p.to_string_lossy()));
+                        }
+                    }
+                    let mut all_dirs: Vec<PathBuf> = sources.iter().filter(|s| s.is_dir()).cloned().collect();
+                    all_dirs.extend(dirs.into_iter().cloned());
+                    all_dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+                    all_dirs.dedup();
+                    for d in all_dirs {
+                        let _ = fs::remove_dir(&d);
+                    }
+                }
+            }
+            Ok(false) => {}
+            // (a cancel in the middle of a file comes back as a read error)
+            Err(_) if self.cancelled() => {}
+            Err(e) => self.err(e),
+        }
+    }
+
+    /// Delete members (files, or folders with everything in them) from an archive.
+    fn archive_delete(&mut self, archive_path: &Path, sources: &[PathBuf]) {
+        let remove: Vec<String> = sources
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if remove.is_empty() {
+            return;
+        }
+        self.set_totals(remove.len() as u64, 0);
+        self.set_current(archive_path);
+        let worker: &Worker = self;
+        let mut open = |p: &Path| -> std::io::Result<Box<dyn Read + '_>> { Ok(Box::new(File::open(p)?)) };
+        match archive::rewrite(archive_path, &remove, &Vec::new(), &mut open, &|| worker.cancelled()) {
+            Ok(true) => self.progress.lock().unwrap().files_done = remove.len() as u64,
+            Ok(false) => {}
+            Err(e) => self.err(e),
+        }
+    }
+
     // ------------------------------------------------------------------------
     // FTP
     // ------------------------------------------------------------------------
@@ -741,6 +901,191 @@ impl Worker {
             remote_dirs.sort_by_key(|d| std::cmp::Reverse(d.matches('/').count()));
             for d in remote_dirs {
                 let _ = conn.remove_dir(&d);
+            }
+        }
+    }
+
+    /// Server to server: every file is fetched into a temporary local file
+    /// and sent on from there (FTP and SFTP can't talk to each other directly).
+    /// Moving within one server is a plain rename.
+    fn remote_copy(&mut self, from: &dyn Remote, to: &dyn Remote, sources: &[PathBuf], dirs: &[PathBuf], dest: &str, delete_source: bool) {
+        let same_server = from.id() == to.id();
+        if let Err(e) = to.mkdir_all(dest) {
+            return self.err(e);
+        }
+        // Names in a target folder, for overwrite checks (listed once per folder).
+        type Names = HashMap<String, (bool, Option<SystemTime>)>;
+        fn names_in(cache: &mut HashMap<String, Names>, conn: &dyn Remote, dir: &str) -> Names {
+            cache
+                .entry(dir.to_string())
+                .or_insert_with(|| conn.list(dir).map(|v| v.into_iter().map(|e| (e.name, (e.is_dir, e.modified))).collect()).unwrap_or_default())
+                .clone()
+        }
+        let mut listings: HashMap<String, Names> = HashMap::new();
+        let free_name = |names: &Names, name: &str| -> String {
+            let (stem, ext) = crate::fsutil::split_ext(name, false);
+            (2..)
+                .map(|i| if ext.is_empty() { format!("{stem} ({i})") } else { format!("{stem} ({i}).{ext}") })
+                .find(|n| !names.contains_key(n))
+                .unwrap()
+        };
+
+        if same_server && delete_source {
+            self.set_totals(sources.len() as u64, 0);
+            for src in sources {
+                if self.cancelled() {
+                    return;
+                }
+                let remote = src.to_string_lossy().into_owned();
+                let name = remote::file_name(&remote).to_string();
+                let mut target = remote::join(dest, &name);
+                self.set_current(Path::new(&remote));
+                if target == remote || target.starts_with(&format!("{remote}/")) {
+                    self.err(lf!("{remote}: Ziel liegt in der Quelle", "{remote}: the target is inside the source"));
+                    self.file_done();
+                    continue;
+                }
+                let names = names_in(&mut listings, to, dest);
+                if let Some((is_dir, _)) = names.get(&name) {
+                    let label = PathBuf::from(format!("{}{}", to.url(), target));
+                    match self.decide(Path::new(&remote), &label, false) {
+                        Decision::Skip => {
+                            self.file_done();
+                            continue;
+                        }
+                        Decision::Rename => target = remote::join(dest, &free_name(&names, &name)),
+                        Decision::Write if *is_dir => {
+                            self.err(lf!("{target}: dort liegt schon ein Ordner – er wird nicht überschrieben", "{target}: there is a folder already – it is not overwritten"));
+                            self.file_done();
+                            continue;
+                        }
+                        Decision::Write => {
+                            if let Err(e) = to.remove_file(&target) {
+                                self.err(format!("{target}: {e}"));
+                                self.file_done();
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = to.rename(&remote, &target) {
+                    self.err(format!("{remote}: {e}"));
+                }
+                self.file_done();
+            }
+            return;
+        }
+
+        // Plan: (source file, target file, size, mtime), target dirs to create, source dirs for cleanup.
+        let mut files: Vec<(String, String, u64, Option<SystemTime>)> = Vec::new();
+        let mut target_dirs: Vec<String> = Vec::new();
+        let mut source_dirs: Vec<String> = Vec::new();
+        let mut parent_listing: HashMap<String, Vec<crate::fsutil::Entry>> = HashMap::new();
+        for src in sources {
+            let remote = src.to_string_lossy().into_owned();
+            let name = remote::file_name(&remote).to_string();
+            let target = remote::join(dest, &name);
+            if dirs.contains(src) {
+                if same_server && (target == remote || target.starts_with(&format!("{remote}/"))) {
+                    self.err(lf!("{remote}: Ziel liegt in der Quelle", "{remote}: the target is inside the source"));
+                    continue;
+                }
+                target_dirs.push(target.clone());
+                source_dirs.push(remote.clone());
+                let mut all = Vec::new();
+                if let Err(e) = from.walk(&remote, &mut all) {
+                    self.err(format!("{remote}: {e}"));
+                    continue;
+                }
+                for e in all {
+                    let rp = e.path.to_string_lossy().into_owned();
+                    let rel = rp.strip_prefix(&remote).unwrap_or(&rp).trim_start_matches('/');
+                    let tp = remote::join(&target, rel);
+                    if e.is_dir {
+                        target_dirs.push(tp);
+                        source_dirs.push(rp);
+                    } else {
+                        files.push((rp, tp, e.size, e.modified));
+                    }
+                }
+            } else {
+                let rdir = remote::parent(&remote).unwrap_or_else(|| "/".into());
+                let listing = parent_listing.entry(rdir.clone()).or_insert_with(|| from.list(&rdir).unwrap_or_default());
+                let info = listing.iter().find(|e| e.name == name);
+                files.push((remote, target, info.map(|e| e.size).unwrap_or(0), info.and_then(|e| e.modified)));
+            }
+        }
+        // Every byte travels twice: down to this computer and up again.
+        self.set_totals(files.len() as u64, files.iter().map(|f| f.2).sum::<u64>() * 2);
+        for d in &target_dirs {
+            if !to.is_dir(d)
+                && let Err(e) = to.mkdir(d)
+            {
+                self.err(format!("{d}: {e}"));
+            }
+        }
+        let temp_dir = remote::cache_dir(from.id()).join(format!("transfer-{}", to.id()));
+        if let Err(e) = fs::create_dir_all(&temp_dir) {
+            return self.err(format!("{}: {e}", temp_dir.to_string_lossy()));
+        }
+        let temp = temp_dir.join("part");
+        for (source, mut target, size, mtime) in files {
+            if self.cancelled() {
+                break;
+            }
+            let tdir = remote::parent(&target).unwrap_or_else(|| "/".into());
+            let name = remote::file_name(&target).to_string();
+            let names = names_in(&mut listings, to, &tdir);
+            if same_server && source == target {
+                // Copy into the same folder: a second file "name (2)".
+                target = remote::join(&tdir, &free_name(&names, &name));
+            } else if let Some((is_dir, target_mtime)) = names.get(&name) {
+                let label = PathBuf::from(format!("{}{}", to.url(), target));
+                let newer = matches!((mtime, *target_mtime), (Some(a), Some(b)) if a > b);
+                match self.decide(Path::new(&format!("{}{}", from.url(), source)), &label, newer) {
+                    Decision::Skip => {
+                        self.add_bytes(size * 2);
+                        self.file_done();
+                        continue;
+                    }
+                    Decision::Rename => target = remote::join(&tdir, &free_name(&names, &name)),
+                    Decision::Write if *is_dir => {
+                        self.err(lf!("{target}: dort liegt schon ein Ordner – er wird nicht überschrieben", "{target}: there is a folder already – it is not overwritten"));
+                        self.file_done();
+                        continue;
+                    }
+                    Decision::Write => {}
+                }
+            }
+            self.set_current(Path::new(&format!("{}{}", from.url(), source)));
+            let r = from
+                .download(&source, &temp, &|r, w| self.pump(r, w))
+                .map_err(|e| format!("{}{source}: {e}", from.url()))
+                .and_then(|_| to.upload(&temp, &target, &|r, w| self.pump(r, w)).map_err(|e| format!("{}{target}: {e}", to.url())));
+            let _ = fs::remove_file(&temp);
+            match r {
+                Ok(()) => {
+                    if let Some(n) = listings.get_mut(&tdir) {
+                        n.insert(remote::file_name(&target).to_string(), (false, None));
+                    }
+                    if delete_source && let Err(e) = from.remove_file(&source) {
+                        self.err(format!("{source}: {e}"));
+                    }
+                }
+                Err(_) if self.cancelled() => {
+                    // A half uploaded file must not stay behind.
+                    let _ = to.remove_file(&target);
+                }
+                Err(e) => self.err(e),
+            }
+            self.file_done();
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+        if delete_source && !self.cancelled() {
+            // Deepest first; only removes dirs that ended up empty.
+            source_dirs.sort_by_key(|d| std::cmp::Reverse(d.matches('/').count()));
+            for d in source_dirs {
+                let _ = from.remove_dir(&d);
             }
         }
     }

@@ -213,6 +213,12 @@ pub fn connections() -> Vec<Arc<dyn Remote>> {
     v
 }
 
+/// Tests: make a stand-in server available like a real connection.
+#[cfg(test)]
+pub fn register(conn: Arc<dyn Remote>) {
+    REGISTRY.lock().unwrap().insert(conn.id(), conn);
+}
+
 pub fn disconnect(id: usize) {
     let conn = REGISTRY.lock().unwrap().remove(&id);
     if let Some(c) = conn {

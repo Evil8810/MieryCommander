@@ -1524,3 +1524,553 @@ fn update_and_open_with_dialogs() {
     assert!(h.query_by_label("Kate  ★").is_some());
     assert!(h.query_by_label("Firefox").is_some());
 }
+
+/// Files of a zip as name → content, read with the zip crate itself.
+fn zip_members(path: &Path) -> std::collections::BTreeMap<String, String> {
+    use std::io::Read as _;
+    let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut out = std::collections::BTreeMap::new();
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        if f.is_dir() {
+            continue;
+        }
+        let mut s = String::new();
+        f.read_to_string(&mut s).unwrap();
+        assert!(out.insert(f.name().to_string(), s).is_none(), "member {} is in the zip twice", f.name());
+    }
+    out
+}
+
+/// A finished job reports its errors in a dialog: there must be none.
+fn assert_no_job_errors(h: &Harness<'_, MieryApp>, step: &str) {
+    match &h.state().dialog {
+        None => {}
+        Some(Dialog::Message { title, text }) => panic!("{step}: job reported errors – {title}: {text}"),
+        Some(_) => panic!("{step}: unexpected dialog still open"),
+    }
+}
+
+/// F5/F6 into a zip, overwriting a member, deleting inside the zip (F8).
+#[test]
+fn zip_copy_into_overwrite_and_delete() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("neu.txt"), "NEU").unwrap();
+    fs::create_dir_all(l.path().join("ordner/tief")).unwrap();
+    fs::write(l.path().join("ordner/x.txt"), "X").unwrap();
+    fs::write(l.path().join("ordner/tief/y.txt"), "Y").unwrap();
+    let zip = r.path().join("a.zip");
+    make_zip(&zip, &[("alt.txt", "ALT"), ("bilder/b1.txt", "B1"), ("bilder/b2.txt", "B2")]);
+
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    let open_right = |h: &mut Harness<'_, MieryApp>, inner: &str| {
+        let app = h.state_mut();
+        app.right_active = true;
+        app.navigate_active(Location::Archive { file: zip.clone(), inner: inner.into() });
+        app.right_active = false;
+        steps(h, 2);
+    };
+    open_right(&mut h, "");
+    let names = |m: &std::collections::BTreeMap<String, String>| m.keys().cloned().collect::<Vec<_>>();
+
+    // 1. F5: a file into the root of the zip.
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    match &h.state().dialog {
+        Some(Dialog::CopyMove { is_move: false, target, mode: crate::dialogs::CopyMode::ArchiveAdd { archive }, .. }) => {
+            assert_eq!(archive, &zip);
+            assert_eq!(target, &format!("{}/", zip.to_string_lossy()));
+        }
+        _ => panic!("F5 towards a zip should offer to copy into the archive"),
+    }
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "copy into zip");
+    let m = zip_members(&zip);
+    assert_eq!(names(&m), ["alt.txt", "bilder/b1.txt", "bilder/b2.txt", "neu.txt"]);
+    assert_eq!((m["neu.txt"].as_str(), m["alt.txt"].as_str()), ("NEU", "ALT"));
+    assert!(h.state().right.tab().entries.iter().any(|e| e.name == "neu.txt"), "the archive panel shows the new file");
+
+    // 2. Same name again: the overwrite question, then exactly one (new) member.
+    fs::write(l.path().join("neu.txt"), "NEU2").unwrap();
+    panel_key(&mut h, Key::R, Modifiers::COMMAND);
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_until(&mut h, "overwrite question", |a| a.job.as_ref().is_some_and(|j| j.progress.lock().unwrap().question.is_some()));
+    h.get_by_label("Überschreiben").click();
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "overwrite in zip");
+    let m = zip_members(&zip);
+    assert_eq!(m.len(), 4);
+    assert_eq!(m["neu.txt"], "NEU2");
+
+    // …and "skip" leaves the archive file completely untouched.
+    let before = fs::read(&zip).unwrap();
+    fs::write(l.path().join("neu.txt"), "NEU3").unwrap();
+    panel_key(&mut h, Key::R, Modifiers::COMMAND);
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_until(&mut h, "overwrite question", |a| a.job.as_ref().is_some_and(|j| j.progress.lock().unwrap().question.is_some()));
+    h.get_by_label("Überspringen").click();
+    wait_for_job(&mut h);
+    assert_eq!(fs::read(&zip).unwrap(), before, "skipping must not rewrite the archive");
+
+    // 3. A folder (with subfolder) into the folder "bilder/" of the zip.
+    open_right(&mut h, "bilder/");
+    select(&mut h, "ordner");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    match &h.state().dialog {
+        Some(Dialog::CopyMove { target, .. }) => assert_eq!(target, &format!("{}/bilder/", zip.to_string_lossy())),
+        _ => panic!("copy dialog not open"),
+    }
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "folder into zip");
+    let m = zip_members(&zip);
+    assert_eq!(names(&m), ["alt.txt", "bilder/b1.txt", "bilder/b2.txt", "bilder/ordner/tief/y.txt", "bilder/ordner/x.txt", "neu.txt"]);
+    assert_eq!((m["bilder/ordner/x.txt"].as_str(), m["bilder/ordner/tief/y.txt"].as_str()), ("X", "Y"));
+    assert!(l.path().join("ordner/x.txt").exists(), "copy keeps the source");
+
+    // 4. F6: move a file into the zip – it is gone from the folder afterwards.
+    fs::write(l.path().join("weg.txt"), "WEG").unwrap();
+    panel_key(&mut h, Key::R, Modifiers::COMMAND);
+    select(&mut h, "weg.txt");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "move into zip");
+    assert_eq!(zip_members(&zip)["bilder/weg.txt"], "WEG");
+    assert!(!l.path().join("weg.txt").exists(), "move removes the source");
+
+    // 5. A target outside the archive is refused; nothing starts, nothing changes.
+    let before = fs::read(&zip).unwrap();
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    match &mut h.state_mut().dialog {
+        Some(Dialog::CopyMove { target, .. }) => *target = format!("{}/../raus/", zip.to_string_lossy()),
+        _ => panic!("copy dialog not open"),
+    }
+    dialog_input(&mut h, None);
+    assert!(h.state().job.is_none() && matches!(h.state().dialog, Some(Dialog::CopyMove { .. })), "dialog stays open, no job");
+    h.state_mut().dialog = None;
+    steps(&mut h, 2);
+    assert_eq!(fs::read(&zip).unwrap(), before);
+
+    // 6. F8 inside the zip: a folder with everything in it.
+    h.state_mut().right_active = true;
+    steps(&mut h, 2);
+    select(&mut h, "ordner");
+    panel_key(&mut h, Key::F8, Modifiers::NONE);
+    match &h.state().dialog {
+        Some(Dialog::Delete { paths, permanent: true, archive: Some(a), .. }) => {
+            assert_eq!(a, &zip);
+            assert_eq!(paths, &[std::path::PathBuf::from("bilder/ordner")]);
+        }
+        _ => panic!("F8 inside a zip should ask to delete from the archive"),
+    }
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "delete in zip");
+    let m = zip_members(&zip);
+    assert_eq!(names(&m), ["alt.txt", "bilder/b1.txt", "bilder/b2.txt", "bilder/weg.txt", "neu.txt"]);
+    assert_eq!(m["bilder/b1.txt"], "B1");
+    assert!(!h.state().right.tab().entries.iter().any(|e| e.name == "ordner"));
+    assert!(l.path().join("ordner/tief/y.txt").exists(), "deleting in the zip never touches the real folder");
+}
+
+/// 7z can be read but not changed: F5 into it and F8 inside it say so and do nothing.
+#[test]
+fn seven_zip_is_not_modified() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("neu.txt"), "NEU").unwrap();
+    fs::write(l.path().join("drin.txt"), "DRIN").unwrap();
+    let seven = r.path().join("a.7z");
+    let mut open = |p: &Path| -> std::io::Result<Box<dyn std::io::Read>> { Ok(Box::new(fs::File::open(p)?)) };
+    crate::archive::pack(&seven, &vec![(l.path().join("drin.txt"), "drin.txt".into(), false)], &mut open).unwrap();
+    let before = fs::read(&seven).unwrap();
+
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    let app = h.state_mut();
+    app.right_active = true;
+    app.navigate_active(Location::Archive { file: seven.clone(), inner: String::new() });
+    app.right_active = false;
+    steps(&mut h, 2);
+
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    assert!(h.state().dialog.is_none() && h.state().job.is_none());
+    assert!(h.state().toast.as_ref().is_some_and(|(msg, _, err)| *err && msg.contains("7z")), "F5: {:?}", h.state().toast.as_ref().map(|t| &t.0));
+
+    h.state_mut().toast = None;
+    h.state_mut().right_active = true;
+    steps(&mut h, 2);
+    select(&mut h, "drin.txt");
+    panel_key(&mut h, Key::F8, Modifiers::NONE);
+    assert!(h.state().dialog.is_none() && h.state().job.is_none());
+    assert!(h.state().toast.as_ref().is_some_and(|(msg, _, err)| *err && msg.contains("7z")));
+    assert_eq!(fs::read(&seven).unwrap(), before);
+}
+
+#[test]
+fn archive_target_text() {
+    use crate::dialogs::inner_from_target;
+    let a = Path::new("/x/a.zip");
+    assert_eq!(inner_from_target(a, "/x/a.zip/"), Some(String::new()));
+    assert_eq!(inner_from_target(a, "/x/a.zip"), Some(String::new()));
+    assert_eq!(inner_from_target(a, " /x/a.zip/bilder/2024 "), Some("bilder/2024/".into()));
+    assert_eq!(inner_from_target(a, "/x/a.zip/./neu//"), Some("neu/".into()));
+    assert_eq!(inner_from_target(a, "/x/a.zip/../raus"), None);
+    assert_eq!(inner_from_target(a, "/x/a.zipx/y"), None);
+    assert_eq!(inner_from_target(a, "/woanders/"), None);
+}
+
+/// A stand-in server for tests: a local folder behind the `Remote` interface.
+struct DirRemote {
+    id: usize,
+    root: std::path::PathBuf,
+    site: Site,
+    /// Downloads + uploads so far (a rename must not need any).
+    transfers: std::sync::atomic::AtomicUsize,
+    fail_uploads: std::sync::atomic::AtomicBool,
+}
+
+impl DirRemote {
+    fn start(root: &Path) -> std::sync::Arc<DirRemote> {
+        let conn = std::sync::Arc::new(DirRemote {
+            id: crate::remote::next_id(),
+            root: root.to_path_buf(),
+            site: Site { name: "test".into(), host: "server.test".into(), ..Default::default() },
+            transfers: Default::default(),
+            fail_uploads: Default::default(),
+        });
+        crate::remote::register(conn.clone());
+        conn
+    }
+
+    fn local(&self, path: &str) -> std::path::PathBuf {
+        self.root.join(path.trim_start_matches('/'))
+    }
+}
+
+impl crate::remote::Remote for DirRemote {
+    fn id(&self) -> usize {
+        self.id
+    }
+    fn site(&self) -> &Site {
+        &self.site
+    }
+    fn home(&self) -> &str {
+        "/"
+    }
+    fn url(&self) -> String {
+        format!("test{}://server.test", self.id)
+    }
+    fn list(&self, dir: &str) -> Result<Vec<crate::fsutil::Entry>, String> {
+        let mut v = crate::fsutil::read_dir(&self.local(dir), true).map_err(|e| e.to_string())?;
+        for e in &mut v {
+            e.path = crate::remote::join(dir, &e.name).into();
+        }
+        Ok(v)
+    }
+    fn mkdir(&self, path: &str) -> Result<(), String> {
+        fs::create_dir(self.local(path)).map_err(|e| e.to_string())
+    }
+    fn is_dir(&self, path: &str) -> bool {
+        self.local(path).is_dir()
+    }
+    fn rename(&self, from: &str, to: &str) -> Result<(), String> {
+        fs::rename(self.local(from), self.local(to)).map_err(|e| e.to_string())
+    }
+    fn remove_file(&self, path: &str) -> Result<(), String> {
+        fs::remove_file(self.local(path)).map_err(|e| e.to_string())
+    }
+    fn remove_dir(&self, path: &str) -> Result<(), String> {
+        fs::remove_dir(self.local(path)).map_err(|e| e.to_string()) // only empty folders, like a server
+    }
+    fn download(&self, remote: &str, local: &Path, pump: &crate::remote::Pump) -> Result<(), String> {
+        self.transfers.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut src = fs::File::open(self.local(remote)).map_err(|e| e.to_string())?;
+        let mut dst = fs::File::create(local).map_err(|e| e.to_string())?;
+        pump(&mut src, &mut dst).map_err(|e| e.to_string())
+    }
+    fn upload(&self, local: &Path, remote: &str, pump: &crate::remote::Pump) -> Result<(), String> {
+        self.transfers.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_uploads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("Platte voll".into());
+        }
+        let mut src = fs::File::open(local).map_err(|e| e.to_string())?;
+        let mut dst = fs::File::create(self.local(remote)).map_err(|e| e.to_string())?;
+        pump(&mut src, &mut dst).map_err(|e| e.to_string())
+    }
+    fn quit(&self) {}
+}
+
+/// Left panel on server `a` in `a_dir`, right panel on server `b` in `b_dir`; left is active.
+fn setup_servers(h: &mut Harness<'_, MieryApp>, a: &DirRemote, a_dir: &str, b: &DirRemote, b_dir: &str) {
+    let app = h.state_mut();
+    app.right_active = false;
+    app.navigate_active(Location::Ftp { id: a.id, path: a_dir.into() });
+    app.right_active = true;
+    app.navigate_active(Location::Ftp { id: b.id, path: b_dir.into() });
+    app.right_active = false;
+    steps(h, 3);
+}
+
+#[test]
+fn server_to_server_copy_and_move() {
+    use egui_kittest::kittest::Queryable;
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 249) as u8).collect();
+    fs::create_dir_all(da.path().join("daten/sub")).unwrap();
+    fs::write(da.path().join("daten/eins.txt"), "1").unwrap();
+    fs::write(da.path().join("daten/sub/zwei.bin"), &big).unwrap();
+    fs::write(da.path().join("einzeln.txt"), "E").unwrap();
+    fs::create_dir_all(db.path().join("ziel")).unwrap();
+    fs::write(db.path().join("ziel/einzeln.txt"), "ALT").unwrap();
+    let (a, b) = (DirRemote::start(da.path()), DirRemote::start(db.path()));
+
+    let mut h = harness();
+    setup_servers(&mut h, &a, "/", &b, "/ziel");
+    assert!(remote_names(h.state()).contains(&"daten".to_string()), "left panel lists server A: {:?}", remote_names(h.state()));
+
+    // F5: a folder with a subfolder from server A to server B.
+    select(&mut h, "daten");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    match &h.state().dialog {
+        Some(Dialog::CopyMove { is_move: false, target, mode: crate::dialogs::CopyMode::RemoteCopy { from, to, dirs }, .. }) => {
+            assert_eq!((*from, *to), (a.id, b.id));
+            assert_eq!(target, "/ziel/");
+            assert_eq!(dirs.len(), 1);
+        }
+        _ => panic!("F5 between two servers should offer a server-to-server copy"),
+    }
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "server copy");
+    assert_eq!(fs::read_to_string(db.path().join("ziel/daten/eins.txt")).unwrap(), "1");
+    assert_eq!(fs::read(db.path().join("ziel/daten/sub/zwei.bin")).unwrap(), big);
+    assert!(da.path().join("daten/sub/zwei.bin").exists(), "copy keeps the source");
+
+    // An existing file on B: the overwrite question, then the new content.
+    select(&mut h, "einzeln.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_until(&mut h, "overwrite question", |x| x.job.as_ref().is_some_and(|j| j.progress.lock().unwrap().question.is_some()));
+    h.get_by_label("Überschreiben").click();
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "server overwrite");
+    assert_eq!(fs::read_to_string(db.path().join("ziel/einzeln.txt")).unwrap(), "E");
+
+    // F6: move the folder – afterwards it is gone from A, folders included.
+    fs::write(da.path().join("daten/eins.txt"), "1b").unwrap();
+    select(&mut h, "daten");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_until(&mut h, "overwrite question", |x| x.job.as_ref().is_some_and(|j| j.progress.lock().unwrap().question.is_some()));
+    h.get_by_label("Alle").click();
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "server move");
+    assert_eq!(fs::read_to_string(db.path().join("ziel/daten/eins.txt")).unwrap(), "1b");
+    assert_eq!(fs::read(db.path().join("ziel/daten/sub/zwei.bin")).unwrap(), big);
+    assert!(!da.path().join("daten").exists(), "moved folder is removed from the source server");
+    assert!(da.path().join("einzeln.txt").exists());
+
+    // Nothing of the transfer stays on this computer.
+    assert!(!crate::remote::cache_dir(a.id).join(format!("transfer-{}", b.id)).exists());
+
+    // Ctrl+C on A, Ctrl+V on B.
+    fs::remove_file(db.path().join("ziel/einzeln.txt")).unwrap();
+    panel_key(&mut h, Key::R, Modifiers::COMMAND);
+    select(&mut h, "einzeln.txt");
+    panel_key(&mut h, Key::C, Modifiers::COMMAND);
+    panel_key(&mut h, Key::Tab, Modifiers::NONE);
+    panel_key(&mut h, Key::V, Modifiers::COMMAND);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "paste server to server");
+    assert_eq!(fs::read_to_string(db.path().join("ziel/einzeln.txt")).unwrap(), "E");
+}
+
+#[test]
+fn server_move_and_copy_within_one_server() {
+    let d = tempfile::tempdir().unwrap();
+    fs::create_dir_all(d.path().join("archiv")).unwrap();
+    fs::write(d.path().join("bericht.txt"), "B").unwrap();
+    fs::write(d.path().join("liste.txt"), "L").unwrap();
+    let a = DirRemote::start(d.path());
+    let mut h = harness();
+    setup_servers(&mut h, &a, "/", &a, "/archiv");
+
+    // F6 into another folder of the same server: a rename, nothing is transferred.
+    select(&mut h, "bericht.txt");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "move within a server");
+    assert_eq!(fs::read_to_string(d.path().join("archiv/bericht.txt")).unwrap(), "B");
+    assert!(!d.path().join("bericht.txt").exists());
+    assert_eq!(a.transfers.load(std::sync::atomic::Ordering::SeqCst), 0, "a move on one server is a rename");
+
+    // F5 with both panels in the same folder: a second file "liste (2).txt".
+    setup_servers(&mut h, &a, "/", &a, "/");
+    select(&mut h, "liste.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "copy within a folder");
+    assert_eq!(fs::read_to_string(d.path().join("liste (2).txt")).unwrap(), "L");
+    assert_eq!(fs::read_to_string(d.path().join("liste.txt")).unwrap(), "L");
+}
+
+/// When the upload fails, a move must not delete the file on the source server.
+#[test]
+fn server_move_keeps_source_when_upload_fails() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(da.path().join("wichtig.txt"), "W").unwrap();
+    let (a, b) = (DirRemote::start(da.path()), DirRemote::start(db.path()));
+    b.fail_uploads.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut h = harness();
+    setup_servers(&mut h, &a, "/", &b, "/");
+    select(&mut h, "wichtig.txt");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    match &h.state().dialog {
+        Some(Dialog::Message { text, .. }) => assert!(text.contains("Platte voll"), "error shown: {text}"),
+        _ => panic!("a failed transfer must be reported"),
+    }
+    assert_eq!(fs::read_to_string(da.path().join("wichtig.txt")).unwrap(), "W", "source survives a failed move");
+    assert!(!db.path().join("wichtig.txt").exists());
+}
+
+/// Ctrl+C in a folder, Ctrl+V inside a zip.
+#[test]
+fn paste_into_zip() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("neu.txt"), "NEU").unwrap();
+    let zip = r.path().join("a.zip");
+    make_zip(&zip, &[("alt.txt", "ALT")]);
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    let app = h.state_mut();
+    app.right_active = true;
+    app.navigate_active(Location::Archive { file: zip.clone(), inner: String::new() });
+    app.right_active = false;
+    steps(&mut h, 2);
+    select(&mut h, "neu.txt");
+    panel_key(&mut h, Key::C, Modifiers::COMMAND);
+    panel_key(&mut h, Key::Tab, Modifiers::NONE);
+    panel_key(&mut h, Key::V, Modifiers::COMMAND);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "paste into zip");
+    let m = zip_members(&zip);
+    assert_eq!(m.keys().cloned().collect::<Vec<_>>(), ["alt.txt", "neu.txt"]);
+    assert_eq!(m["neu.txt"], "NEU");
+    assert!(l.path().join("neu.txt").exists());
+}
+
+/// A second click on the name of the selected file renames it in the list.
+#[test]
+fn click_on_name_renames_in_place() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("zwei.txt"), "2").unwrap();
+    fs::write(l.path().join("drei.txt"), "3").unwrap();
+    fs::create_dir(l.path().join("mappe")).unwrap();
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    let wait = |h: &mut Harness<'_, MieryApp>| {
+        std::thread::sleep(Duration::from_millis(480));
+        steps(h, 3);
+    };
+    let click = |h: &mut Harness<'_, MieryApp>, name: &str| {
+        h.get_by_label_contains(name).click();
+        steps(h, 2);
+    };
+    let renaming = |h: &Harness<'_, MieryApp>| h.state().left.tab().rename.as_ref().map(|r| r.text.clone());
+
+    // First click only selects.
+    click(&mut h, "zwei");
+    wait(&mut h);
+    assert_eq!(h.state().left.tab().current().unwrap().name, "zwei.txt");
+    assert_eq!(renaming(&h), None, "the first click selects, it doesn't rename");
+
+    // Second click on the name: the name becomes a text field; typing replaces
+    // the name but keeps the extension.
+    click(&mut h, "zwei");
+    assert_eq!(renaming(&h), None, "not before the double-click time is over");
+    wait(&mut h);
+    assert_eq!(renaming(&h).as_deref(), Some("zwei.txt"));
+    if let Ok(out) = std::env::var("MIERY_RENAME_SHOT") {
+        h.render().unwrap().save(out).unwrap();
+    }
+    h.event(Event::Text("neu".into()));
+    steps(&mut h, 2);
+    assert_eq!(renaming(&h).as_deref(), Some("neu.txt"));
+    h.key_press(Key::Enter);
+    steps(&mut h, 3);
+    assert_eq!(renaming(&h), None);
+    assert!(l.path().join("neu.txt").exists() && !l.path().join("zwei.txt").exists());
+    assert_eq!(fs::read_to_string(l.path().join("neu.txt")).unwrap(), "2");
+    assert_eq!(h.state().left.tab().current().unwrap().name, "neu.txt", "the cursor follows the renamed file");
+
+    // Esc gives up.
+    click(&mut h, "neu");
+    wait(&mut h);
+    assert_eq!(renaming(&h).as_deref(), Some("neu.txt"));
+    h.event(Event::Text("verworfen".into()));
+    steps(&mut h, 2);
+    h.key_press(Key::Escape);
+    steps(&mut h, 3);
+    assert_eq!(renaming(&h), None);
+    assert!(l.path().join("neu.txt").exists() && !l.path().join("verworfen.txt").exists());
+
+    // A name that exists already is refused, nothing is overwritten.
+    click(&mut h, "neu");
+    wait(&mut h);
+    h.event(Event::Text("drei".into()));
+    steps(&mut h, 2);
+    h.key_press(Key::Enter);
+    steps(&mut h, 3);
+    assert_eq!(fs::read_to_string(l.path().join("drei.txt")).unwrap(), "3");
+    assert_eq!(fs::read_to_string(l.path().join("neu.txt")).unwrap(), "2");
+    assert!(h.state().toast.as_ref().is_some_and(|t| t.2), "an error is shown");
+}
+
+/// A double-click on the name opens the folder and never starts renaming.
+#[test]
+fn double_click_on_name_opens_instead_of_renaming() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::create_dir(l.path().join("mappe")).unwrap();
+    // Short frames: the default test frame (1/4 s, two per step) is too slow for a double-click.
+    let mut h = Harness::builder().with_size([1200.0, 800.0]).with_step_dt(1.0 / 60.0).build_eframe(|cc| MieryApp::new(cc));
+    setup(&mut h, l.path(), r.path());
+    // Select it first, so the double-click starts on the selected entry –
+    // exactly the case in which a single click would rename.
+    h.get_by_label_contains("mappe").click();
+    steps(&mut h, 2);
+    std::thread::sleep(Duration::from_millis(480));
+    for _ in 0..30 {
+        h.step(); // > 0.3 s of app time: the next click starts a new click sequence
+    }
+    assert!(h.state().left.tab().rename.is_none());
+    let pos = h.get_by_label_contains("mappe").rect().center();
+    h.event(Event::PointerMoved(pos));
+    steps(&mut h, 1);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos, button: eframe::egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        steps(&mut h, 1);
+    }
+    steps(&mut h, 2);
+    assert_eq!(h.state().left.tab().loc, Location::Dir(l.path().join("mappe")), "double-click opens the folder");
+    std::thread::sleep(Duration::from_millis(480));
+    steps(&mut h, 3);
+    assert!(h.state().left.tab().rename.is_none(), "and nothing is being renamed afterwards");
+}

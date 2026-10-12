@@ -420,23 +420,28 @@ impl MieryApp {
                 }
             }
             Cmd::Delete | Cmd::DeletePermanent => {
-                if in_archive {
-                    self.notify(l!("Löschen in Archiven wird nicht unterstützt", "Deleting inside archives is not supported"), true);
-                    return;
-                }
                 let sel = self.active_ref().tab().selection();
                 let paths: Vec<PathBuf> = sel.iter().map(|e| e.path.clone()).collect();
                 if paths.is_empty() {
                     return;
                 }
+                if let Location::Archive { file, .. } = &loc {
+                    // ZIP and TAR can be changed; always asked, there is no trash in an archive.
+                    if crate::archive::can_modify(file) {
+                        self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: None, archive: Some(file.clone()) });
+                    } else {
+                        self.notify(crate::archive::cannot_modify_reason(file), true);
+                    }
+                    return;
+                }
                 if let Some(id) = remote {
                     let dirs = sel.iter().filter(|e| e.is_dir).map(|e| e.path.clone()).collect();
-                    self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: Some((id, dirs)) });
+                    self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: Some((id, dirs)), archive: None });
                     return;
                 }
                 let permanent = cmd == Cmd::DeletePermanent || !self.cfg.delete_to_trash;
                 if self.cfg.confirm_delete || permanent {
-                    self.open_dialog(Dialog::Delete { paths, permanent, ftp: None });
+                    self.open_dialog(Dialog::Delete { paths, permanent, ftp: None, archive: None });
                 } else {
                     self.start_job(JobKind::Delete { to_trash: true }, paths, PathBuf::new(), ctx);
                 }
@@ -721,6 +726,50 @@ impl MieryApp {
         }
     }
 
+    /// Rename a file or folder (local, or on the server `ftp`) to `name`.
+    pub fn rename_entry(&mut self, from: &Path, name: &str, ftp: Option<usize>) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if name.contains('/') || (cfg!(windows) && name.contains('\\')) || name == "." || name == ".." {
+            self.notify(l!("Der Name darf keinen Schrägstrich enthalten (zum Verschieben F6 nutzen)", "The name must not contain a slash (use F6 to move)"), true);
+            return;
+        }
+        if let Some(id) = ftp {
+            let from = from.to_string_lossy().into_owned();
+            let to = remote::join(&remote::parent(&from).unwrap_or_else(|| "/".into()), name);
+            if to != from {
+                self.spawn_ftp_op(move || {
+                    let c = remote::get(id).ok_or(l!("Verbindung zum Server ist getrennt", "The connection to the server is closed"))?;
+                    if c.list(&remote::parent(&to).unwrap_or_else(|| "/".into())).is_ok_and(|v| v.iter().any(|e| e.name == remote::file_name(&to))) {
+                        return Err(lf!("{to} existiert bereits", "{to} already exists"));
+                    }
+                    c.rename(&from, &to).map(|_| l!("Umbenannt", "Renamed").to_string())
+                });
+            }
+            return;
+        }
+        let target = from.with_file_name(name);
+        if target == from {
+            return;
+        }
+        // Only a change of upper/lower case on a file system that ignores case
+        // (Windows, macOS): then "target" is the very same file, not another one.
+        let same_file = match (std::fs::canonicalize(&target), std::fs::canonicalize(from)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if target.exists() && !same_file {
+            self.notify(lf!("{} existiert bereits", "{} already exists", target.to_string_lossy()), true);
+        } else if let Err(e) = std::fs::rename(from, &target) {
+            self.notify(lf!("Umbenennen: {e}", "Rename: {e}"), true);
+        } else {
+            self.reload_all();
+            self.active().tab_mut().select_name(name);
+        }
+    }
+
     /// Files for "Open with": the selection in a local folder (not "..").
     pub fn open_with_files(&self) -> Vec<PathBuf> {
         let tab = self.active_ref().tab();
@@ -832,12 +881,20 @@ impl MieryApp {
             (ClipSource::Archive { file, inner }, Location::Dir(dir)) => {
                 (JobKind::Extract { archive: file.clone(), base: inner.clone() }, dir.clone(), None)
             }
-            (_, Location::Archive { .. }) => {
-                self.notify(l!("In Archive einfügen geht nicht – bitte Alt+F5 (Packen) nutzen", "Cannot paste into archives – please use Alt+F5 (Pack)"), true);
-                return;
+            (ClipSource::Local, Location::Archive { file, inner }) => {
+                if !crate::archive::can_modify(file) {
+                    self.notify(crate::archive::cannot_modify_reason(file), true);
+                    return;
+                }
+                (JobKind::ArchiveAdd { archive: file.clone(), inner: inner.clone(), delete_source: clip.cut }, PathBuf::new(), None)
             }
+            (ClipSource::Remote(from), Location::Ftp { id, path }) => (
+                JobKind::RemoteCopy { from: *from, to: *id, dirs: clip.dirs.clone(), delete_source: clip.cut },
+                PathBuf::from(path),
+                None,
+            ),
             _ => {
-                self.notify(l!("Einfügen zwischen zwei Servern wird nicht unterstützt", "Pasting between two servers is not supported"), true);
+                self.notify(l!("Das geht nur über einen lokalen Ordner (Archiv ↔ Server, Archiv ↔ Archiv)", "This only works through a local folder (archive ↔ server, archive ↔ archive)"), true);
                 return;
             }
         };
@@ -1054,12 +1111,26 @@ impl MieryApp {
                 target: with_slash(dest.to_string_lossy().into_owned()),
                 mode: CopyMode::Download { conn: *id, dirs },
             },
-            (Location::Dir(_), Location::Archive { .. }) => {
-                self.notify(l!("Kopieren in ein Archiv: bitte Alt+F5 (Packen) nutzen", "Copying into an archive: please use Alt+F5 (Pack)"), true);
-                return;
+            (Location::Dir(_), Location::Archive { file, inner }) => {
+                if !crate::archive::can_modify(file) {
+                    self.notify(crate::archive::cannot_modify_reason(file), true);
+                    return;
+                }
+                Dialog::CopyMove {
+                    is_move,
+                    sources,
+                    target: format!("{}/{inner}", file.to_string_lossy()),
+                    mode: CopyMode::ArchiveAdd { archive: file.clone() },
+                }
             }
+            (Location::Ftp { id: from, .. }, Location::Ftp { id: to, path }) if cmd != Cmd::CopySameDir => Dialog::CopyMove {
+                is_move,
+                sources,
+                target: with_slash(path.clone()),
+                mode: CopyMode::RemoteCopy { from: *from, to: *to, dirs },
+            },
             _ => {
-                self.notify(l!("Diese Kombination wird nicht unterstützt (FTP ↔ lokaler Ordner geht)", "This combination is not supported (FTP ↔ local folder works)"), true);
+                self.notify(l!("Diese Kombination wird nicht unterstützt (Archiv → Server bitte über einen lokalen Ordner)", "This combination is not supported (archive → server: please go through a local folder)"), true);
                 return;
             }
         };
@@ -1733,6 +1804,10 @@ impl MieryApp {
                     self.open_entry(i, ctx);
                 }
                 PanelAction::Cmd(c) => self.run(c, ctx),
+                PanelAction::RenameTo { from, name } => {
+                    let ftp = self.active_ref().tab().loc.ftp().map(|(id, _)| id);
+                    self.rename_entry(&from, &name, ftp);
+                }
                 PanelAction::Drop { from_right, target, is_move } => {
                     // The dragged files are the source panel's selection.
                     self.right_active = from_right;
