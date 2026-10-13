@@ -107,8 +107,22 @@ pub fn read_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
         if !show_hidden && name.starts_with('.') {
             continue;
         }
-        let path = item.path();
-        let Ok(lmeta) = std::fs::symlink_metadata(&path) else {
+        let mut path = item.path();
+        let found = std::fs::symlink_metadata(&path).or_else(|e| {
+            // Umlauts can be stored as one character ("Ü") or as two ("U" + "¨").
+            // On network shares the listed form is sometimes not the one the
+            // file is found under: try the other one.
+            other_unicode_forms(&name)
+                .into_iter()
+                .map(|n| dir.join(n))
+                .find_map(|p| std::fs::symlink_metadata(&p).ok().map(|m| (p, m)))
+                .map(|(p, m)| {
+                    path = p;
+                    m
+                })
+                .ok_or(e)
+        });
+        let Ok(lmeta) = found else {
             // The folder lists the name, but the details can't be read – e.g.
             // a name with umlauts stored in another Unicode form on a network
             // share, or missing rights. Show it anyway instead of hiding a
@@ -148,6 +162,16 @@ pub fn read_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
         });
     }
     Ok(out)
+}
+
+/// The same name in the other Unicode spellings (composed / decomposed),
+/// without the one given.
+pub fn other_unicode_forms(name: &str) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
+    let mut v = vec![name.nfc().collect::<String>(), name.nfd().collect::<String>()];
+    v.retain(|n| n != name);
+    v.dedup();
+    v
 }
 
 #[cfg(unix)]

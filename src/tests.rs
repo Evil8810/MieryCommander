@@ -2166,3 +2166,20 @@ fn network_drives_are_remembered_for_auto_connect() {
     let off = Site { host: "127.0.0.1".into(), port, protocol: Protocol::Ftp, auto_connect: Some(true), ..Default::default() };
     assert_eq!(crate::remote::auto_connect(&off), Ok(String::new()));
 }
+
+/// "Ü" as one character or as "U" + combining dots: both spellings are known.
+#[test]
+fn umlaut_names_in_both_unicode_forms() {
+    let composed = "\u{00DC}bersichtsmappe.odf";
+    let decomposed = "U\u{0308}bersichtsmappe.odf";
+    assert_ne!(composed, decomposed);
+    assert_eq!(crate::fsutil::other_unicode_forms(composed), [decomposed]);
+    assert_eq!(crate::fsutil::other_unicode_forms(decomposed), [composed]);
+    assert!(crate::fsutil::other_unicode_forms("notiz.txt").is_empty());
+    // A file with such a name is listed with a path that really opens.
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join(decomposed), "inhalt").unwrap();
+    let entries = crate::fsutil::read_dir(d.path(), true).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(fs::read_to_string(&entries[0].path).unwrap(), "inhalt");
+}
