@@ -109,6 +109,21 @@ pub fn read_dir(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
         }
         let path = item.path();
         let Ok(lmeta) = std::fs::symlink_metadata(&path) else {
+            // The folder lists the name, but the details can't be read – e.g.
+            // a name with umlauts stored in another Unicode form on a network
+            // share, or missing rights. Show it anyway instead of hiding a
+            // file that exists; what kind it is comes from the listing itself.
+            let kind = item.file_type().ok();
+            out.push(Entry {
+                name,
+                path,
+                is_dir: kind.is_some_and(|k| k.is_dir()),
+                is_link: kind.is_some_and(|k| k.is_symlink()),
+                is_parent: false,
+                size: 0,
+                modified: None,
+                mode: 0,
+            });
             continue;
         };
         if !show_hidden && is_hidden(&lmeta) {
