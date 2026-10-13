@@ -52,6 +52,9 @@ pub struct Site {
     pub key_file: String,
     /// Try the SSH agent and ~/.ssh/id_* keys.
     pub auto_keys: bool,
+    /// Connect when the app starts. Not set = network drives (SMB) yes,
+    /// FTP/SFTP servers no.
+    pub auto_connect: Option<bool>,
 }
 
 impl Default for Site {
@@ -69,11 +72,59 @@ impl Default for Site {
             accept_invalid_certs: false,
             key_file: String::new(),
             auto_keys: true,
+            auto_connect: None,
         }
     }
 }
 
+/// Can the server be reached right now? A quick check before connecting
+/// automatically, so a NAS that is switched off (or a laptop away from
+/// home) costs two seconds in the background instead of an error or a
+/// login window.
+pub fn reachable(host: &str, port: u16) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let host = host.trim().trim_start_matches("smb://").trim_start_matches("\\\\").trim_end_matches(['/', '\\']);
+    if host.is_empty() {
+        return false;
+    }
+    let try_host = |h: &str| {
+        (h, port).to_socket_addrs().is_ok_and(|addrs| {
+            addrs.take(3).any(|a| TcpStream::connect_timeout(&a, std::time::Duration::from_secs(2)).is_ok())
+        })
+    };
+    // "nas" alone is often only found as "nas.local" (Bonjour), e.g. on a Mac.
+    try_host(host) || (!host.contains('.') && !host.contains(':') && try_host(&format!("{host}.local")))
+}
+
+/// Connect a saved site without any questions (app start). `Ok("")` = the
+/// server is not reachable right now, which is nothing to report.
+pub fn auto_connect(site: &Site) -> Result<String, String> {
+    let port = if site.protocol == Protocol::Smb { 445 } else { site.port };
+    if !reachable(&site.host, port) {
+        return Ok(String::new());
+    }
+    let password = if site.save_password { site.load_password().unwrap_or_default() } else { String::new() };
+    let name = site.label();
+    let failed = |e: String| lf!("Automatisches Verbinden mit „{name}“ fehlgeschlagen: {e}", "Connecting to “{name}” automatically failed: {e}");
+    match site.protocol {
+        Protocol::Smb => crate::smb::mount(&site.host, &site.remote_dir, &site.user, &password)
+            .map(|_| lf!("Netzlaufwerk „{name}“ verbunden", "Network drive “{name}” connected"))
+            .map_err(failed),
+        _ => match connect(site.clone(), password, None) {
+            Ok(_) => Ok(lf!("Mit „{name}“ verbunden", "Connected to “{name}”")),
+            // Never trust a new server key without the user looking at it.
+            Err(ConnectError::UnknownHostKey(_)) => Err(failed(l!("unbekannter Host-Schlüssel – bitte einmal von Hand verbinden", "unknown host key – please connect by hand once").into())),
+            Err(e) => Err(failed(e.to_string())),
+        },
+    }
+}
+
 impl Site {
+    /// Connect this site when the app starts?
+    pub fn auto(&self) -> bool {
+        self.auto_connect.unwrap_or(self.protocol == Protocol::Smb)
+    }
+
     pub fn icon(&self) -> &'static str {
         match self.protocol {
             Protocol::Ftp => "🌐",

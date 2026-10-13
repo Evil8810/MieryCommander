@@ -149,6 +149,8 @@ pub struct MieryApp {
     applied_language: Option<crate::i18n::LangChoice>,
     /// SMB share being made available (kio-fuse / gio / Finder).
     pub smb_mounting: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
+    /// The share `smb_mounting` belongs to (remembered once it worked).
+    pub(crate) smb_site: Option<remote::Site>,
     /// Files copied/cut with Ctrl+C / Ctrl+X.
     pub clip: Option<crate::clip::FileClip>,
     pub ftp_connecting: Option<std::sync::mpsc::Receiver<Result<std::sync::Arc<dyn remote::Remote>, remote::ConnectError>>>,
@@ -219,10 +221,14 @@ impl MieryApp {
             pending_update: None,
             applied_language: None,
             smb_mounting: None,
+            smb_site: None,
             clip: None,
         };
         if check_updates {
             app.start_update_check(false);
+        }
+        if !cfg!(test) {
+            app.auto_connect_sites();
         }
         app
     }
@@ -428,7 +434,7 @@ impl MieryApp {
                 if let Location::Archive { file, .. } = &loc {
                     // ZIP and TAR can be changed; always asked, there is no trash in an archive.
                     if crate::archive::can_modify(file) {
-                        self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: None, archive: Some(file.clone()) });
+                        self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: None, archive: Some(file.clone()), no_trash: false });
                     } else {
                         self.notify(crate::archive::cannot_modify_reason(file), true);
                     }
@@ -436,12 +442,12 @@ impl MieryApp {
                 }
                 if let Some(id) = remote {
                     let dirs = sel.iter().filter(|e| e.is_dir).map(|e| e.path.clone()).collect();
-                    self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: Some((id, dirs)), archive: None });
+                    self.open_dialog(Dialog::Delete { paths, permanent: true, ftp: Some((id, dirs)), archive: None, no_trash: false });
                     return;
                 }
                 let permanent = cmd == Cmd::DeletePermanent || !self.cfg.delete_to_trash;
                 if self.cfg.confirm_delete || permanent {
-                    self.open_dialog(Dialog::Delete { paths, permanent, ftp: None, archive: None });
+                    self.open_dialog(Dialog::Delete { paths, permanent, ftp: None, archive: None, no_trash: false });
                 } else {
                     self.start_job(JobKind::Delete { to_trash: true }, paths, PathBuf::new(), ctx);
                 }
@@ -941,6 +947,7 @@ impl MieryApp {
         });
         for r in done {
             match r {
+                Ok(msg) if msg.is_empty() => {}
                 Ok(msg) => self.notify(msg, false),
                 Err(e) => self.notify(e, true),
             }
@@ -985,6 +992,20 @@ impl MieryApp {
                     self.smb_mounting = None;
                     self.dialog = None;
                     self.notify(lf!("SMB-Freigabe eingebunden: {}", "SMB share mounted: {}", path.display()), false);
+                    // A network drive that worked is remembered and connected
+                    // again at the next start (can be switched off per connection).
+                    if let Some(mut site) = self.smb_site.take() {
+                        let known = self.cfg.sites.iter().any(|s| {
+                            s.protocol == site.protocol && s.host.trim() == site.host.trim() && s.remote_dir.trim_matches('/') == site.remote_dir.trim_matches('/') && s.user == site.user
+                        });
+                        if !known {
+                            if site.name.trim().is_empty() {
+                                let share = site.remote_dir.trim_matches('/');
+                                site.name = if share.is_empty() { site.host.trim().to_string() } else { format!("{}/{share}", site.host.trim()) };
+                            }
+                            self.cfg.sites.push(site);
+                        }
+                    }
                     self.navigate_active(Location::Dir(path));
                 }
                 Ok(Err(e)) => {
@@ -1019,6 +1040,7 @@ impl MieryApp {
 
     pub fn start_ftp_connect(&mut self, site: remote::Site, password: String, trusted_host_key: Option<String>) {
         if site.protocol == remote::Protocol::Smb {
+            self.smb_site = Some(site.clone());
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let _ = tx.send(crate::smb::mount(&site.host, &site.remote_dir, &site.user, &password));
@@ -1698,14 +1720,19 @@ impl MieryApp {
 
     fn job_window(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.job else { return };
-        let (finished, errors) = {
+        let (finished, errors, no_trash) = {
             let p = job.progress.lock().unwrap();
-            (p.finished, p.errors.clone())
+            (p.finished, p.errors.clone(), p.no_trash.clone())
         };
         if finished {
             let title = job.kind.title();
             self.job = None;
             self.reload_all();
+            if !no_trash.is_empty() && errors.is_empty() {
+                // Nothing was deleted there: ask whether to delete for good.
+                self.open_dialog(Dialog::Delete { paths: no_trash, permanent: true, ftp: None, archive: None, no_trash: true });
+                return;
+            }
             let after = self.after_job.take();
             if self.sync.open && !self.sync.is_scanning() {
                 self.sync.start_scan(); // show the result of a synchronisation
@@ -1843,6 +1870,20 @@ impl MieryApp {
         if self.applied_language != Some(self.cfg.language) {
             self.applied_language = Some(self.cfg.language);
             crate::i18n::apply(self.cfg.language);
+        }
+    }
+
+    /// Saved network drives and servers marked "connect at start": connect
+    /// them in the background. Folders on them that were open last time
+    /// appear as soon as the drive is there.
+    pub fn auto_connect_sites(&mut self) {
+        let sites: Vec<remote::Site> = self.cfg.sites.iter().filter(|s| s.auto() && !s.host.trim().is_empty()).cloned().collect();
+        for site in sites {
+            self.spawn_ftp_op(move || {
+                let r = remote::auto_connect(&site);
+                fsutil::wake_ui();
+                r
+            });
         }
     }
 

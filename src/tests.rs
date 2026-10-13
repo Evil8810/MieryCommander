@@ -2074,3 +2074,95 @@ fn double_click_on_name_opens_instead_of_renaming() {
     steps(&mut h, 3);
     assert!(h.state().left.tab().rename.is_none(), "and nothing is being renamed afterwards");
 }
+
+/// F8 where there is no trash (a NAS share): nothing is lost silently and
+/// nothing fails with a cryptic error – the app asks to delete permanently.
+#[test]
+fn delete_without_trash_offers_permanent_delete() {
+    use egui_kittest::kittest::Queryable;
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let share = l.path().join("__no_trash__");
+    fs::create_dir_all(share.join("film")).unwrap();
+    fs::write(share.join("film/teil1.mkv"), "x").unwrap();
+    fs::write(share.join("notiz.txt"), "n").unwrap();
+    let mut h = harness();
+    setup(&mut h, &share, r.path());
+
+    select(&mut h, "film");
+    panel_key(&mut h, Key::F8, Modifiers::NONE);
+    assert!(matches!(h.state().dialog, Some(Dialog::Delete { permanent: false, no_trash: false, .. })), "first the normal trash question");
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    // Not deleted, and the app asks instead of showing an error.
+    assert!(share.join("film/teil1.mkv").exists());
+    match &h.state().dialog {
+        Some(Dialog::Delete { paths, permanent: true, no_trash: true, .. }) => assert_eq!(paths, &[share.join("film")]),
+        _ => panic!("expected the question to delete permanently"),
+    }
+    assert!(h.query_by_label_contains("keinen Papierkorb").is_some());
+
+    // Cancel keeps everything.
+    h.key_press(Key::Escape);
+    steps(&mut h, 3);
+    assert!(h.state().dialog.is_none() && share.join("film/teil1.mkv").exists());
+
+    // Again, this time confirmed: the folder is gone, the other file stays.
+    select(&mut h, "film");
+    panel_key(&mut h, Key::F8, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    dialog_input(&mut h, None);
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "permanent delete after the trash was not available");
+    assert!(!share.join("film").exists());
+    assert!(share.join("notiz.txt").exists());
+}
+
+/// Network drives reconnect at start: a share that was connected once is
+/// remembered, and the reachability check never hangs on a dead server.
+#[test]
+fn network_drives_are_remembered_for_auto_connect() {
+    use crate::remote::Protocol;
+    // Defaults: SMB yes, FTP/SFTP only when asked for.
+    let smb = Site { protocol: Protocol::Smb, host: "nas.local".into(), remote_dir: "Media".into(), user: String::new(), ..Default::default() };
+    assert!(smb.auto());
+    assert!(!Site { protocol: Protocol::Sftp, ..Default::default() }.auto());
+    assert!(Site { protocol: Protocol::Sftp, auto_connect: Some(true), ..Default::default() }.auto());
+    assert!(!Site { auto_connect: Some(false), ..smb.clone() }.auto());
+    // Old saved sites (without the new setting) still load.
+    let old: Site = serde_json::from_str(r#"{"name":"alt","protocol":"Smb","host":"nas","port":445,"user":"","remote_dir":"x"}"#).unwrap();
+    assert!(old.auto());
+
+    // A share that mounted successfully is saved once.
+    let share = tempfile::tempdir().unwrap();
+    let mut h = harness();
+    steps(&mut h, 2);
+    for _ in 0..2 {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(share.path().to_path_buf())).unwrap();
+        let app = h.state_mut();
+        app.smb_site = Some(smb.clone());
+        app.smb_mounting = Some(rx);
+        steps(&mut h, 3);
+    }
+    let saved: Vec<&Site> = h.state().cfg.sites.iter().filter(|s| s.protocol == Protocol::Smb).collect();
+    assert_eq!(saved.len(), 1, "saved once, not twice");
+    assert_eq!((saved[0].name.as_str(), saved[0].auto()), ("nas.local/Media", true));
+
+    // Reachability: a listening port is found, a closed one is not – quickly.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert!(crate::remote::reachable("127.0.0.1", port));
+    assert!(crate::remote::reachable("smb://127.0.0.1/", port));
+    drop(listener);
+    // (port 1 instead of the port just closed: on loopback a connection to a
+    // free high port can end up connected to itself)
+    let port = 1;
+    let start = Instant::now();
+    assert!(!crate::remote::reachable("127.0.0.1", port));
+    assert!(!crate::remote::reachable("", 445));
+    assert!(start.elapsed() < Duration::from_secs(5));
+    // Not reachable = nothing to report (no error, no login window).
+    let off = Site { host: "127.0.0.1".into(), port, protocol: Protocol::Ftp, auto_connect: Some(true), ..Default::default() };
+    assert_eq!(crate::remote::auto_connect(&off), Ok(String::new()));
+}

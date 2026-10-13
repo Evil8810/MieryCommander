@@ -130,7 +130,8 @@ pub enum Dialog {
     NewFile { name: String },
     Rename { from: PathBuf, name: String, ftp: Option<usize> },
     /// `archive`: the paths are members of this archive.
-    Delete { paths: Vec<PathBuf>, permanent: bool, ftp: Option<(usize, Vec<PathBuf>)>, archive: Option<PathBuf> },
+    /// `no_trash`: asked again because these could not go to the trash.
+    Delete { paths: Vec<PathBuf>, permanent: bool, ftp: Option<(usize, Vec<PathBuf>)>, archive: Option<PathBuf>, no_trash: bool },
     Pack { sources: Vec<PathBuf>, target: String },
     Pattern { select: bool, mask: String },
     Hotlist,
@@ -449,8 +450,15 @@ impl MieryApp {
                         outcome = Outcome::Close;
                     }
                 }
-                Dialog::Delete { paths, permanent, ftp, archive } => {
-                    ui.heading(if archive.is_some() {
+                Dialog::Delete { paths, permanent, ftp, archive, no_trash } => {
+                    if *no_trash {
+                        ui.heading(l!("Kein Papierkorb vorhanden", "No trash available"));
+                        ui.label(l!("Hier gibt es keinen Papierkorb (z. B. auf einem Netzlaufwerk/NAS).", "There is no trash here (e.g. on a network drive/NAS)."));
+                        ui.add_space(4.0);
+                    }
+                    ui.heading(if *no_trash {
+                        l!("Stattdessen endgültig löschen?", "Delete permanently instead?")
+                    } else if archive.is_some() {
                         l!("Aus Archiv löschen", "Delete from archive")
                     } else if ftp.is_some() {
                         l!("Vom Server löschen", "Delete from server")
@@ -1184,6 +1192,14 @@ impl MieryApp {
                     }
                 }
                 ui.checkbox(&mut site.save_password, l!("Passwort im Schlüsselbund speichern", "Save password in the keyring"));
+                let mut auto = site.auto();
+                if ui
+                    .checkbox(&mut auto, l!("Beim Start automatisch verbinden (nach „Speichern“)", "Connect automatically at start (after “Save”)"))
+                    .on_hover_text(l!("Gilt für gespeicherte Verbindungen. Ist der Server nicht erreichbar, passiert einfach nichts.", "Applies to saved connections. If the server can't be reached, simply nothing happens."))
+                    .changed()
+                {
+                    site.auto_connect = Some(auto);
+                }
             });
         });
         if let Some(hosts) = lookup_request {

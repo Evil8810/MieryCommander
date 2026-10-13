@@ -86,6 +86,9 @@ pub struct Progress {
     pub errors: Vec<String>,
     /// Set by the worker when it needs an overwrite decision: (source, target).
     pub question: Option<(PathBuf, PathBuf)>,
+    /// Files that could not go to the trash (network drives have none);
+    /// the app then offers to delete them permanently.
+    pub no_trash: Vec<PathBuf>,
 }
 
 pub struct Job {
@@ -230,12 +233,12 @@ impl Worker {
                         break;
                     }
                     self.set_current(src);
-                    let r = if *to_trash {
-                        trash::delete(src).map_err(|e| e.to_string())
-                    } else {
-                        remove_any(src).map_err(|e| e.to_string())
-                    };
-                    if let Err(e) = r {
+                    if *to_trash {
+                        // No trash there (e.g. a NAS share): asked about afterwards.
+                        if move_to_trash(src).is_err() && fs::symlink_metadata(src).is_ok() {
+                            self.progress.lock().unwrap().no_trash.push(src.clone());
+                        }
+                    } else if let Err(e) = remove_any(src) {
                         self.err(format!("{}: {e}", src.to_string_lossy()));
                     }
                     self.file_done();
@@ -524,7 +527,7 @@ impl Worker {
                 }
                 Op::Delete(p) => {
                     self.set_current(p);
-                    let r = if to_trash { trash::delete(p).map_err(|e| e.to_string()) } else { remove_any(p).map_err(|e| e.to_string()) };
+                    let r = if to_trash { move_to_trash(p) } else { remove_any(p).map_err(|e| e.to_string()) };
                     if let Err(e) = r {
                         self.err(format!("{}: {e}", p.display()));
                     }
@@ -1133,6 +1136,26 @@ impl Worker {
             self.file_done();
         }
     }
+}
+
+/// Move a file or folder to the system's trash.
+pub fn move_to_trash(p: &Path) -> Result<(), String> {
+    // Tests can make the trash "unavailable", like on a network drive.
+    #[cfg(test)]
+    if p.to_string_lossy().contains("__no_trash__") {
+        return Err("no trash on this volume".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Through the system directly instead of asking the Finder: faster, no
+        // extra permission, and a clear answer on volumes without a trash.
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = trash::TrashContext::new();
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        return ctx.delete(p).map_err(|e| e.to_string());
+    }
+    #[allow(unreachable_code)]
+    trash::delete(p).map_err(|e| e.to_string())
 }
 
 pub fn remove_any(p: &Path) -> std::io::Result<()> {
