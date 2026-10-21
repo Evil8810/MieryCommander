@@ -1509,6 +1509,9 @@ fn entry_menu(ui: &mut egui::Ui, e: &Entry, loc: &Location, marked: usize) -> Op
     }
     if local && !e.is_parent {
         ui.separator();
+        if crate::archive::is_document(&e.path) {
+            menu_item(ui, l!("Inhalt ansehen (wie Archiv)", "Look inside (as archive)"), "Strg+Bild↓", Cmd::OpenAsArchive, &mut out);
+        }
         if crate::archive::is_archive(&e.path) {
             menu_item(ui, l!("Smart hier entpacken", "Smart unpack here"), "Alt+Shift+F9", Cmd::UnpackSmart, &mut out);
             menu_item(ui, l!("Hier entpacken", "Unpack here"), "", Cmd::UnpackHere, &mut out);

@@ -89,6 +89,8 @@ pub enum Cmd {
     FontReset,
     /// "Open with" → choose any application.
     OpenWith,
+    /// Ctrl+PgDn: open the file under the cursor as an archive (also documents).
+    OpenAsArchive,
     CheckUpdates,
 }
 
@@ -97,6 +99,15 @@ pub enum AfterJob {
     View(PathBuf),
     Open(PathBuf),
     Edit { local: PathBuf, conn: usize, remote: String },
+}
+
+/// A job waiting for the running one to finish.
+pub struct QueuedJob {
+    pub kind: JobKind,
+    sources: Vec<PathBuf>,
+    dest: PathBuf,
+    policy: Option<crate::ops::OverwriteAnswer>,
+    after: Option<AfterJob>,
 }
 
 /// A remote file opened in the editor; uploaded again when it changes.
@@ -134,6 +145,10 @@ pub struct MieryApp {
     applied_theme: Option<ThemeChoice>,
     panel_rects: [egui::Rect; 2],
     pub after_job: Option<AfterJob>,
+    /// What a job that is being started should do afterwards (handed to the queue with it).
+    pending_after: Option<AfterJob>,
+    /// Jobs started while another one runs; they follow one after another.
+    pub job_queue: std::collections::VecDeque<QueuedJob>,
     pub ftp_edits: Vec<FtpEdit>,
     pub(crate) ftp_ops: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     startup_frames: u8,
@@ -211,6 +226,8 @@ impl MieryApp {
             applied_theme: None,
             panel_rects: [egui::Rect::NOTHING; 2],
             after_job: None,
+            pending_after: None,
+            job_queue: Default::default(),
             ftp_edits: Vec::new(),
             ftp_ops: Vec::new(),
             ftp_connecting: None,
@@ -285,11 +302,30 @@ impl MieryApp {
     }
 
     pub fn start_job(&mut self, kind: JobKind, sources: Vec<PathBuf>, dest: PathBuf, ctx: &egui::Context) {
+        self.start_job_with_policy(kind, sources, dest, ctx, None);
+    }
+
+    /// Start a job – or, while another one runs, put it in the queue; it
+    /// starts by itself when the running one is done.
+    pub fn start_job_with_policy(
+        &mut self,
+        kind: JobKind,
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        ctx: &egui::Context,
+        policy: Option<crate::ops::OverwriteAnswer>,
+    ) {
+        let after = self.pending_after.take();
         if self.job.is_some() {
-            self.notify(l!("Es läuft bereits eine Operation", "Another operation is already running"), true);
+            self.notify(
+                lf!("{} – kommt nach dem laufenden Vorgang dran ({} in der Warteschlange)", "{} – starts after the running operation ({} queued)", kind.title(), self.job_queue.len() + 1),
+                false,
+            );
+            self.job_queue.push_back(QueuedJob { kind, sources, dest, policy, after });
             return;
         }
-        self.job = Some(Job::start(kind, sources, dest, ctx.clone()));
+        self.after_job = after;
+        self.job = Some(Job::start_with_policy(kind, sources, dest, ctx.clone(), policy));
     }
 
     fn open_viewer(&mut self, path: &Path) {
@@ -341,7 +377,7 @@ impl MieryApp {
                 let local = cache.join(&e.name);
                 let _ = std::fs::create_dir_all(&cache);
                 let _ = std::fs::remove_file(&local);
-                self.after_job = Some(match cmd {
+                self.pending_after = Some(match cmd {
                     Cmd::View => AfterJob::View(local),
                     _ => {
                         if cmd == Cmd::Edit {
@@ -628,6 +664,15 @@ impl MieryApp {
             Cmd::DeselectPattern => self.open_dialog(Dialog::Pattern { select: false, mask: "*.*".into() }),
             Cmd::CompareDirs => self.compare_dirs(),
             Cmd::Settings => self.open_dialog(Dialog::Settings),
+            Cmd::OpenAsArchive => {
+                if let Some(e) = self.active_ref().tab().current().cloned()
+                    && !e.is_dir
+                    && local
+                    && crate::archive::can_browse(&e.path)
+                {
+                    self.navigate_active(Location::Archive { file: e.path, inner: String::new() });
+                }
+            }
             Cmd::FontBigger | Cmd::FontSmaller | Cmd::FontReset => {
                 self.cfg.font_scale = match cmd {
                     Cmd::FontBigger => step_font(self.cfg.font_scale, 1),
@@ -904,11 +949,7 @@ impl MieryApp {
                 return;
             }
         };
-        if self.job.is_some() {
-            self.notify(l!("Es läuft bereits eine Operation", "Another operation is already running"), true);
-            return;
-        }
-        self.job = Some(crate::ops::Job::start_with_policy(kind, clip.paths.clone(), dest, ctx.clone(), policy));
+        self.start_job_with_policy(kind, clip.paths.clone(), dest, ctx, policy);
         if clip.cut {
             self.clip = None; // moved files are gone from their old place
         }
@@ -1066,7 +1107,7 @@ impl MieryApp {
             return;
         }
         let _ = std::fs::remove_file(&local);
-        self.after_job = Some(match cmd {
+        self.pending_after = Some(match cmd {
             Cmd::View => AfterJob::View(local.clone()),
             Cmd::Edit => AfterJob::Edit { local: local.clone(), conn: id, remote },
             _ => AfterJob::Open(local.clone()),
@@ -1386,6 +1427,7 @@ impl MieryApp {
                 (Key::G, true, false, false) => Some(Cmd::TakeOtherDir),
                 (Key::B, true, true, false) => Some(Cmd::BranchView),
                 (Key::Comma, true, false, false) => Some(Cmd::Settings),
+                (Key::PageDown, true, false, false) => Some(Cmd::OpenAsArchive),
                 // Font size like in browsers (Shift allowed: "+" needs it on some layouts).
                 (Key::Plus, true, _, false) => Some(Cmd::FontBigger),
                 (Key::Minus, true, false, false) => Some(Cmd::FontSmaller),
@@ -1728,12 +1770,17 @@ impl MieryApp {
             let title = job.kind.title();
             self.job = None;
             self.reload_all();
+            let after = self.after_job.take();
+            // Next one from the queue.
+            if let Some(q) = self.job_queue.pop_front() {
+                self.after_job = q.after;
+                self.job = Some(Job::start_with_policy(q.kind, q.sources, q.dest, ctx.clone(), q.policy));
+            }
             if !no_trash.is_empty() && errors.is_empty() {
                 // Nothing was deleted there: ask whether to delete for good.
                 self.open_dialog(Dialog::Delete { paths: no_trash, permanent: true, ftp: None, archive: None, no_trash: true });
                 return;
             }
-            let after = self.after_job.take();
             if self.sync.open && !self.sync.is_scanning() {
                 self.sync.start_scan(); // show the result of a synchronisation
             }
@@ -1769,11 +1816,16 @@ impl MieryApp {
         let job = self.job.as_ref().unwrap();
         let p = job.progress.lock().unwrap();
         let question = p.question.clone();
+        let queued: Vec<&'static str> = self.job_queue.iter().map(|q| q.kind.title()).collect();
+        let mut drop_queue = false;
+        // Can be moved (and folded up) so it doesn't cover the panels.
         egui::Window::new(job.kind.title())
-            .collapsible(false)
+            .id(egui::Id::new("job_window"))
+            .collapsible(true)
             .resizable(false)
             .default_width(460.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .show(ctx, |ui| {
                 let counting = p.files_total == 0 && p.bytes_total == 0;
                 if counting {
@@ -1805,12 +1857,24 @@ impl MieryApp {
                     secs % 60,
                     fsutil::format_size_short(speed)
                 ));
-                if ui.button(l!("Abbrechen", "Cancel")).clicked() {
-                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                    let _ = job.answer_tx.send(crate::ops::OverwriteAnswer::Cancel);
+                if !queued.is_empty() {
+                    ui.separator();
+                    ui.label(RichText::new(lf!("Danach in der Warteschlange: {}", "Queued next: {}", queued.join(", "))).small());
                 }
+                ui.horizontal(|ui| {
+                    if ui.button(l!("Abbrechen", "Cancel")).clicked() {
+                        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let _ = job.answer_tx.send(crate::ops::OverwriteAnswer::Cancel);
+                    }
+                    if !queued.is_empty() && ui.button(l!("Warteschlange leeren", "Clear queue")).clicked() {
+                        drop_queue = true;
+                    }
+                });
             });
         drop(p);
+        if drop_queue {
+            self.job_queue.clear();
+        }
         if let Some((src, dst)) = question {
             crate::dialogs::overwrite_modal(ctx, &src, &dst, &job.answer_tx);
         }

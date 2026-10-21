@@ -1324,6 +1324,7 @@ fn keys_table() -> Vec<(&'static str, &'static str)> {
     ("Buchstaben tippen", l!("Schnellsuche nach Namen", "Quick search by name")),
     ("Strg+C / Strg+X / Strg+V", l!("Kopieren / Ausschneiden / Einfügen (auch mit Dolphin & Co.)", "Copy / cut / paste (also with Dolphin & co.)")),
     ("Klick auf den Namen", l!("Markierte Datei direkt in der Liste umbenennen (Enter übernimmt, Esc bricht ab)", "Rename the selected file right in the list (Enter accepts, Esc cancels)")),
+    ("Strg+Bild↓", l!("Datei als Archiv öffnen (auch Office-Dokumente)", "Open a file as archive (office documents too)")),
     ("Shift+Enter", l!("Öffnen mit… (Programm wählen)", "Open with… (choose an application)")),
     ("Strg++ / Strg+- / Strg+0", l!("Schrift größer / kleiner / normal (auch Strg+Mausrad)", "Bigger / smaller / normal font (also Ctrl+mouse wheel)")),
     ("Rechtsklick", l!("Kontextmenü (auf freier Fläche: Einfügen, Neuer Ordner, …)", "Context menu (on empty space: paste, new folder, …)")),

@@ -89,6 +89,8 @@ pub fn keys(s: &str) -> String {
         .replace("Entf", "Del")
         .replace("Leertaste", "Space")
         .replace("Pos1", "Home")
+        .replace("Bild↓", "PgDn")
+        .replace("Bild↑", "PgUp")
         .replace("Rechtsklick", "Right-click")
         .replace("Buchstaben tippen", "Type letters")
         .replace("Klick", "click")

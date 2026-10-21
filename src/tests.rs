@@ -1737,6 +1737,8 @@ struct DirRemote {
     /// Downloads + uploads so far (a rename must not need any).
     transfers: std::sync::atomic::AtomicUsize,
     fail_uploads: std::sync::atomic::AtomicBool,
+    /// Every download takes this long (to have a job that is still running).
+    slow_ms: std::sync::atomic::AtomicU64,
 }
 
 impl DirRemote {
@@ -1747,6 +1749,7 @@ impl DirRemote {
             site: Site { name: "test".into(), host: "server.test".into(), ..Default::default() },
             transfers: Default::default(),
             fail_uploads: Default::default(),
+            slow_ms: Default::default(),
         });
         crate::remote::register(conn.clone());
         conn
@@ -1794,6 +1797,7 @@ impl crate::remote::Remote for DirRemote {
     }
     fn download(&self, remote: &str, local: &Path, pump: &crate::remote::Pump) -> Result<(), String> {
         self.transfers.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(self.slow_ms.load(std::sync::atomic::Ordering::SeqCst)));
         let mut src = fs::File::open(self.local(remote)).map_err(|e| e.to_string())?;
         let mut dst = fs::File::create(local).map_err(|e| e.to_string())?;
         pump(&mut src, &mut dst).map_err(|e| e.to_string())
@@ -2182,4 +2186,85 @@ fn umlaut_names_in_both_unicode_forms() {
     let entries = crate::fsutil::read_dir(d.path(), true).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(fs::read_to_string(&entries[0].path).unwrap(), "inhalt");
+}
+
+/// Office documents open in their program on Enter; Ctrl+PgDn still looks inside.
+#[test]
+fn office_documents_are_not_folders() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    make_zip(&l.path().join("Übersichtsmappe.odt"), &[("content.xml", "<x/>"), ("mimetype", "application/vnd.oasis.opendocument.text")]);
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    select(&mut h, "Übersichtsmappe.odt");
+    // What Enter does with it: a file to open, not a folder to enter.
+    let (sh, df) = (h.state().cfg.show_hidden, h.state().cfg.dirs_first);
+    let i = h.state().left.tab().cursor;
+    let to_open = h.state_mut().left.tab_mut().enter(i, sh, df);
+    assert_eq!(to_open, Some(l.path().join("Übersichtsmappe.odt")));
+    assert_eq!(h.state().left.tab().loc, Location::Dir(l.path().to_path_buf()));
+    // Ctrl+PgDn: look inside.
+    panel_key(&mut h, Key::PageDown, Modifiers::COMMAND);
+    assert!(matches!(&h.state().left.tab().loc, Location::Archive { file, .. } if file.ends_with("Übersichtsmappe.odt")));
+    assert!(remote_names(h.state()).contains(&"content.xml".to_string()));
+}
+
+/// A second copy while one is running waits in a queue and starts by itself;
+/// the progress window can be moved.
+#[test]
+fn second_copy_is_queued_and_progress_window_moves() {
+    use egui_kittest::kittest::Queryable;
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(da.path().join("eins.txt"), "1").unwrap();
+    fs::write(da.path().join("zwei.txt"), "2").unwrap();
+    let (a, b) = (DirRemote::start(da.path()), DirRemote::start(db.path()));
+    a.slow_ms.store(1500, std::sync::atomic::Ordering::SeqCst);
+    let mut h = harness();
+    setup_servers(&mut h, &a, "/", &b, "/");
+
+    select(&mut h, "eins.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    assert!(h.state().job.is_some(), "first copy runs");
+
+    // F5 again while it runs: queued, not refused.
+    select(&mut h, "zwei.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    assert_eq!(h.state().job_queue.len(), 1, "second copy waits in the queue");
+    assert!(h.state().toast.as_ref().is_some_and(|t| !t.2), "a hint, not an error");
+    assert!(h.query_by_label_contains("Danach in der Warteschlange").is_some(), "the progress window shows the queue");
+
+    // Drag the progress window by its title bar.
+    // (the node with the title is the whole window: grab its title bar at the top)
+    let win = h.get_by_label("Server → Server kopieren").rect();
+    let before = eframe::egui::pos2(win.center().x, win.top() + 10.0);
+    let to = before + eframe::egui::vec2(-300.0, -200.0);
+    h.event(Event::PointerMoved(before));
+    steps(&mut h, 1);
+    h.event(Event::PointerButton { pos: before, button: eframe::egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    steps(&mut h, 1);
+    for k in 1..=6 {
+        h.event(Event::PointerMoved(before + (to - before) * (k as f32 / 6.0)));
+        steps(&mut h, 1);
+    }
+    h.event(Event::PointerButton { pos: to, button: eframe::egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    steps(&mut h, 2);
+    assert!(h.state().job.is_some(), "still copying while the window is dragged");
+    {
+        let moved = h.get_by_label("Server → Server kopieren").rect();
+        let moved = eframe::egui::pos2(moved.center().x, moved.top() + 10.0);
+        assert!(moved.distance(to) < 40.0, "window moved: {before:?} → {moved:?}, wanted {to:?}");
+    }
+
+    // Both copies end up done, one after the other.
+    let start = Instant::now();
+    while h.state().job.is_some() || !h.state().job_queue.is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(20), "queue did not finish");
+        std::thread::sleep(Duration::from_millis(20));
+        h.step();
+    }
+    steps(&mut h, 2);
+    assert_no_job_errors(&h, "queued copies");
+    assert_eq!(fs::read_to_string(db.path().join("eins.txt")).unwrap(), "1");
+    assert_eq!(fs::read_to_string(db.path().join("zwei.txt")).unwrap(), "2");
 }

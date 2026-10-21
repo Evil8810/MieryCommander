@@ -100,10 +100,6 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn start(kind: JobKind, sources: Vec<PathBuf>, dest: PathBuf, ctx: eframe::egui::Context) -> Job {
-        Self::start_with_policy(kind, sources, dest, ctx, None)
-    }
-
     /// Like `start`, with a preset answer for existing targets
     /// (e.g. `Rename` when pasting a copy into the same folder).
     pub fn start_with_policy(

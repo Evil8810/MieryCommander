@@ -45,7 +45,7 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
         Kind::Tar(Comp::Zst)
     } else if ends(&[".tar"]) {
         Kind::Tar(Comp::None)
-    } else if ends(&[".zip", ".jar", ".apk", ".cbz", ".epub", ".odt", ".ods", ".odp", ".docx", ".xlsx", ".pptx"]) {
+    } else if ends(&[".zip", ".jar", ".apk", ".cbz"]) || is_document(path) {
         Kind::Zip
     } else if ends(&[".7z", ".cb7"]) {
         Kind::SevenZ
@@ -92,7 +92,24 @@ pub fn needs_own_folder(items: &[Item]) -> bool {
     false
 }
 
+/// Office documents, e-books etc. are ZIP files inside, but they are
+/// documents: Enter opens them in their program. (Ctrl+PgDn still looks inside.)
+pub fn is_document(path: &Path) -> bool {
+    const DOCS: &[&str] = &[
+        "odt", "ods", "odp", "odg", "odf", "odc", "odb", "odm", "ott", "ots", "otp", "otg", "fodt", "docx", "xlsx", "pptx",
+        "docm", "xlsm", "pptm", "dotx", "xltx", "potx", "epub", "vsdx", "3mf", "kra", "ora",
+    ];
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    DOCS.contains(&ext.as_str())
+}
+
+/// An archive to browse like a folder (Enter), unpack, etc.
 pub fn is_archive(path: &Path) -> bool {
+    kind_of(path).is_some() && !is_document(path)
+}
+
+/// Can it be opened as a folder at all (Ctrl+PgDn), documents included?
+pub fn can_browse(path: &Path) -> bool {
     kind_of(path).is_some()
 }
 
@@ -725,6 +742,11 @@ mod tests {
         assert_eq!(kind_of(Path::new("a.7z")), Some(Kind::SevenZ));
         assert_eq!(kind_of(Path::new("comic.cbr")), Some(Kind::Rar));
         assert_eq!(kind_of(Path::new("a.txt")), None);
+        // Office files are ZIPs inside, but documents: not opened as folders.
+        for doc in ["Übersicht.odt", "a.ODS", "b.odp", "c.odg", "d.odf", "e.docx", "f.xlsx", "buch.epub"] {
+            assert!(!is_archive(Path::new(doc)) && can_browse(Path::new(doc)), "{doc}");
+        }
+        assert!(is_archive(Path::new("a.zip")) && is_archive(Path::new("comic.cbz")));
         assert_eq!(clean_path("./a//b/"), Some("a/b".into()));
         assert_eq!(clean_path("../../etc/passwd"), None);
         assert_eq!(clean_path("/abs/x"), Some("abs/x".into()));
