@@ -992,6 +992,12 @@ fn archives_from_other_tools_open_and_unpack() {
         ("tar", "fremd.tar.xz", &["cJf"]),
     ];
     for (tool, name, args) in tools {
+        // Windows: the "tar" found there (e.g. from Git) reads "D:\\…" as a
+        // remote host – this cross-check with other tools runs on Linux/macOS.
+        if cfg!(windows) {
+            eprintln!("{tool}: unter Windows übersprungen");
+            continue;
+        }
         if std::process::Command::new("which").arg(tool).output().map(|o| !o.status.success()).unwrap_or(true) {
             eprintln!("{tool} nicht installiert – übersprungen");
             continue;
