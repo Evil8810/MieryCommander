@@ -92,6 +92,12 @@ pub enum Cmd {
     /// Ctrl+PgDn: open the file under the cursor as an archive (also documents).
     OpenAsArchive,
     CheckUpdates,
+    /// Window with the operations log.
+    ShowLog,
+    /// Mark again what the last operation unmarked.
+    RestoreMarks,
+    /// Sizes of all folders in the active panel.
+    CalcAllSizes,
 }
 
 /// What to do once a download for F3/F4/Enter on an FTP file has finished.
@@ -143,12 +149,16 @@ pub struct MieryApp {
     pub(crate) keys: Vec<(Key, Modifiers)>,
     pub(crate) texts: Vec<String>,
     applied_theme: Option<ThemeChoice>,
-    panel_rects: [egui::Rect; 2],
+    pub panel_rects: [egui::Rect; 2],
     pub after_job: Option<AfterJob>,
     /// What a job that is being started should do afterwards (handed to the queue with it).
     pending_after: Option<AfterJob>,
     /// Jobs started while another one runs; they follow one after another.
     pub job_queue: std::collections::VecDeque<QueuedJob>,
+    /// The progress window is put away; the job goes on in the background.
+    pub job_hidden: bool,
+    pub log_open: bool,
+    thumbs: crate::thumbs::Thumbs,
     pub ftp_edits: Vec<FtpEdit>,
     pub(crate) ftp_ops: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     startup_frames: u8,
@@ -201,6 +211,14 @@ impl MieryApp {
         let check_updates = cfg.check_updates && !cfg!(test);
         let left = Panel::new(&left_paths, cfg.left_active, cfg.show_hidden, cfg.dirs_first);
         let right = Panel::new(&right_paths, cfg.right_active, cfg.show_hidden, cfg.dirs_first);
+        let (mut left, mut right) = (left, right);
+        for (panel, sort) in [(&mut left, cfg.left_sort), (&mut right, cfg.right_sort)] {
+            if let Some((key, desc)) = sort {
+                for t in &mut panel.tabs {
+                    (t.sort, t.desc) = (key, desc);
+                }
+            }
+        }
         let mut app = MieryApp {
             cfg,
             left,
@@ -228,6 +246,9 @@ impl MieryApp {
             after_job: None,
             pending_after: None,
             job_queue: Default::default(),
+            job_hidden: false,
+            log_open: false,
+            thumbs: Default::default(),
             ftp_edits: Vec::new(),
             ftp_ops: Vec::new(),
             ftp_connecting: None,
@@ -244,6 +265,7 @@ impl MieryApp {
         if check_updates {
             app.start_update_check(false);
         }
+        crate::oplog::load_in_background();
         if !cfg!(test) {
             app.auto_connect_sites();
         }
@@ -287,6 +309,28 @@ impl MieryApp {
         }
     }
 
+    /// Remove the marks from these entries in all tabs.
+    fn unmark(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let paths: std::collections::HashSet<&PathBuf> = paths.iter().collect();
+        for t in self.left.tabs.iter_mut().chain(self.right.tabs.iter_mut()) {
+            if t.marked.is_empty() {
+                continue;
+            }
+            let before = t.marked.clone();
+            for e in &t.entries {
+                if paths.contains(&e.path) {
+                    t.marked.remove(&e.name);
+                }
+            }
+            if t.marked.len() != before.len() {
+                t.last_marked = before;
+            }
+        }
+    }
+
     pub fn navigate_active(&mut self, loc: Location) {
         let (h, d) = (self.cfg.show_hidden, self.cfg.dirs_first);
         self.active().tab_mut().navigate(loc, h, d);
@@ -325,6 +369,12 @@ impl MieryApp {
             return;
         }
         self.after_job = after;
+        self.launch(kind, sources, dest, ctx, policy);
+    }
+
+    fn launch(&mut self, kind: JobKind, sources: Vec<PathBuf>, dest: PathBuf, ctx: &egui::Context, policy: Option<crate::ops::OverwriteAnswer>) {
+        crate::ops::VERIFY.store(self.cfg.verify_copy, std::sync::atomic::Ordering::Relaxed);
+        self.job_hidden = false;
         self.job = Some(Job::start_with_policy(kind, sources, dest, ctx.clone(), policy));
     }
 
@@ -419,6 +469,19 @@ impl MieryApp {
                 {
                     self.notify(err, true);
                 }
+            }
+            Cmd::ShowLog => self.log_open = !self.log_open,
+            Cmd::RestoreMarks => {
+                if self.active().tab_mut().restore_marks() == 0 {
+                    self.notify(l!("Keine frühere Markierung in diesem Ordner", "No earlier selection in this folder"), false);
+                }
+            }
+            Cmd::CalcAllSizes => {
+                if !local {
+                    self.notify(l!("Ordnergrößen gibt es nur für lokale Ordner", "Folder sizes are only available for local folders"), true);
+                    return;
+                }
+                self.active().tab_mut().calc_all_sizes();
             }
             Cmd::CheckUpdates => {
                 self.notify(l!("Suche nach Updates…", "Checking for updates…"), false);
@@ -1336,6 +1399,9 @@ impl MieryApp {
                 }
                 (Key::Enter, false, false, true) => Some(Cmd::Properties),
                 (Key::Enter, false, true, false) => Some(Cmd::OpenWith),
+                (Key::Enter, false, true, true) => Some(Cmd::CalcAllSizes),
+                (Key::M, true, true, false) => Some(Cmd::RestoreMarks),
+                (Key::L, true, false, false) => Some(Cmd::ShowLog),
                 (Key::Enter, true, false, false) => Some(Cmd::NameToCmdline),
                 (Key::Backspace, false, false, false) => {
                     let t = self.active().tab_mut();
@@ -1551,6 +1617,7 @@ impl MieryApp {
                 item(ui, l!("Alles markieren", "Select all"), "Strg+A", Cmd::SelectAll);
                 item(ui, l!("Alles abwählen", "Deselect all"), "Strg+Shift+A", Cmd::DeselectAll);
                 item(ui, l!("Markierung umkehren", "Invert selection"), "*", Cmd::Invert);
+                item(ui, l!("Letzte Markierung wiederherstellen", "Restore last selection"), "Strg+Shift+M", Cmd::RestoreMarks);
                 ui.separator();
                 item(ui, l!("Pfade kopieren", "Copy paths"), "Strg+Shift+C", Cmd::CopyPaths);
                 item(ui, l!("Namen kopieren", "Copy names"), "Strg+Shift+N", Cmd::CopyNames);
@@ -1562,6 +1629,8 @@ impl MieryApp {
                 item(ui, l!("Neuer Ordner", "New folder"), "F7", Cmd::Mkdir);
                 item(ui, l!("Verzeichnisse synchronisieren…", "Synchronize folders…"), "", Cmd::SyncDirs);
                 item(ui, l!("Terminal hier öffnen", "Open terminal here"), "F9", Cmd::Terminal);
+                item(ui, l!("Alle Ordnergrößen berechnen", "Calculate all folder sizes"), "Alt+Shift+Enter", Cmd::CalcAllSizes);
+                item(ui, l!("Protokoll der Vorgänge", "Operations log"), "Strg+L", Cmd::ShowLog);
                 ui.separator();
                 item(ui, l!("Ordner-Favoriten", "Favourite folders"), "Strg+D", Cmd::Hotlist);
                 item(ui, l!("Zu Favoriten hinzufügen", "Add to favourites"), "Strg+Shift+D", Cmd::AddHotlist);
@@ -1577,6 +1646,13 @@ impl MieryApp {
             });
             ui.menu_button(l!("Ansicht", "View"), |ui| {
                 item(ui, l!("Schnellansicht", "Quick view"), "Strg+Q", Cmd::QuickView);
+                if ui.checkbox(&mut self.cfg.thumbnails, l!("Vorschaubilder für Fotos", "Thumbnails for pictures")).clicked()
+                    | ui.checkbox(&mut self.cfg.ext_column, l!("Endung in eigener Spalte", "Extension in its own column")).clicked()
+                    | ui.checkbox(&mut self.cfg.single_panel, l!("Nur ein Panel (Tab wechselt)", "One panel only (Tab switches)")).clicked()
+                {
+                    ui.close();
+                }
+                ui.separator();
                 item(ui, l!("Schnellfilter", "Quick filter"), "Strg+S", Cmd::Filter);
                 item(ui, l!("Versteckte Dateien", "Hidden files"), "Strg+H", Cmd::ToggleHidden);
                 item(ui, l!("Branch-View (alle Unterordner)", "Branch view (all subfolders)"), "Strg+Shift+B", Cmd::BranchView);
@@ -1674,9 +1750,20 @@ impl MieryApp {
             ("F9 Terminal", Cmd::Terminal),
             (l!("Beenden", "Exit"), Cmd::Exit),
         ];
+        let font = egui::TextStyle::Button.resolve(ui.style());
         ui.columns(buttons.len(), |cols| {
             for (i, (label, c)) in buttons.iter().enumerate() {
-                if cols[i].add_sized([cols[i].available_width(), 22.0], egui::Button::new(*label)).clicked() {
+                let col = &mut cols[i];
+                // Not enough room for "F5 Kopieren": just the key, the rest on hover.
+                let room = col.available_width() - 2.0 * col.spacing().button_padding.x;
+                let fits = col.painter().layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE).size().x <= room;
+                let short = label.split(' ').next().unwrap_or(label);
+                let text = if fits || !short.starts_with('F') || short.len() > 3 { *label } else { short };
+                let mut r = col.add_sized([col.available_width(), 22.0], egui::Button::new(text).truncate());
+                if text != *label {
+                    r = r.on_hover_text(*label);
+                }
+                if r.clicked() {
                     cmd = Some(*c);
                 }
             }
@@ -1717,6 +1804,14 @@ impl MieryApp {
             let id = egui::Id::new("cmdline");
             let r = ui
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.job_hidden && let Some(j) = &self.job {
+                        let p = j.progress.lock().unwrap();
+                        let pct = (p.bytes_done * 100).checked_div(p.bytes_total).or_else(|| (p.files_done * 100).checked_div(p.files_total)).unwrap_or(0);
+                        drop(p);
+                        if ui.small_button(format!("▲ {} {pct} %", j.kind.title())).on_hover_text(l!("Fortschrittsfenster wieder zeigen", "Show the progress window again")).clicked() {
+                            self.job_hidden = false;
+                        }
+                    }
                     if !busy.is_empty() {
                         ui.label(RichText::new(format!("{}…", busy.join(" · "))).small());
                         ui.spinner();
@@ -1760,6 +1855,55 @@ impl MieryApp {
         });
     }
 
+    /// The operations log (Ctrl+L): newest first, errors can be unfolded.
+    fn log_window(&mut self, ctx: &egui::Context) {
+        if !self.log_open {
+            return;
+        }
+        let mut open = true;
+        let mut clear = false;
+        let records = crate::oplog::records();
+        egui::Window::new(l!("Protokoll der Vorgänge", "Operations log"))
+            .id(egui::Id::new("oplog_window"))
+            .open(&mut open)
+            .default_size([720.0, 420.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(lf!("{} Einträge", "{} entries", records.len())).weak());
+                    if ui.button(l!("Leeren", "Clear")).clicked() {
+                        clear = true;
+                    }
+                    if let Some(f) = crate::oplog::file() {
+                        ui.add(egui::Label::new(RichText::new(f.to_string_lossy()).small().weak()).truncate());
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if records.is_empty() {
+                        ui.label(RichText::new(l!("Noch nichts kopiert, verschoben oder gelöscht.", "Nothing copied, moved or deleted yet.")).weak());
+                    }
+                    for (i, r) in records.iter().enumerate().rev() {
+                        let color = if r.ok { ui.visuals().text_color() } else { egui::Color32::from_rgb(200, 60, 60) };
+                        let to = if r.dest.is_empty() { String::new() } else { format!(" → {}", r.dest) };
+                        let line = format!("{}  {} – {}: {}{to}", r.time, r.title, r.result, r.what);
+                        if r.errors.is_empty() {
+                            ui.add(egui::Label::new(RichText::new(line).color(color)).truncate());
+                        } else {
+                            egui::CollapsingHeader::new(RichText::new(line).color(color)).id_salt(("oplog", i)).show(ui, |ui| {
+                                for e in &r.errors {
+                                    ui.label(RichText::new(e).small());
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+        if clear {
+            crate::oplog::clear();
+        }
+        self.log_open = open;
+    }
+
     fn job_window(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.job else { return };
         let (finished, errors, no_trash) = {
@@ -1768,13 +1912,41 @@ impl MieryApp {
         };
         if finished {
             let title = job.kind.title();
+            // Like Total Commander: what was copied, packed, … is no longer
+            // marked afterwards. After an error or a cancel the marks stay,
+            // so the operation can simply be repeated.
+            let cancelled = job.cancel.load(std::sync::atomic::Ordering::Relaxed);
+            let done = errors.is_empty() && !cancelled;
+            // Downloads for F3/F4 are no operations of their own.
+            if self.after_job.is_none() {
+                crate::oplog::add(crate::oplog::Record {
+                    title: title.to_string(),
+                    what: crate::oplog::describe(&job.sources),
+                    dest: job.dest.to_string_lossy().into_owned(),
+                    result: if cancelled {
+                        l!("abgebrochen", "cancelled").to_string()
+                    } else if errors.is_empty() {
+                        l!("fertig", "done").to_string()
+                    } else {
+                        lf!("{} Fehler", "{} error(s)", errors.len())
+                    },
+                    ok: done,
+                    errors: errors.clone(),
+                    ..Default::default()
+                });
+            }
+            let sources = if done { self.job.take().map(|j| j.sources).unwrap_or_default() } else { Vec::new() };
             self.job = None;
+            self.job_hidden &= !self.job_queue.is_empty();
+            self.unmark(&sources);
             self.reload_all();
             let after = self.after_job.take();
             // Next one from the queue.
             if let Some(q) = self.job_queue.pop_front() {
                 self.after_job = q.after;
-                self.job = Some(Job::start_with_policy(q.kind, q.sources, q.dest, ctx.clone(), q.policy));
+                let hidden = self.job_hidden;
+                self.launch(q.kind, q.sources, q.dest, ctx, q.policy);
+                self.job_hidden = hidden;
             }
             if !no_trash.is_empty() && errors.is_empty() {
                 // Nothing was deleted there: ask whether to delete for good.
@@ -1816,9 +1988,14 @@ impl MieryApp {
         let job = self.job.as_ref().unwrap();
         let p = job.progress.lock().unwrap();
         let question = p.question.clone();
+        let space_question = p.space_question;
+        let paused = job.paused.load(std::sync::atomic::Ordering::Relaxed);
+        let mut hide = false;
         let queued: Vec<&'static str> = self.job_queue.iter().map(|q| q.kind.title()).collect();
         let mut drop_queue = false;
         // Can be moved (and folded up) so it doesn't cover the panels.
+        // Questions always come to the front, also for a job in the background.
+        if !self.job_hidden || question.is_some() || space_question.is_some() {
         egui::Window::new(job.kind.title())
             .id(egui::Id::new("job_window"))
             .collapsible(true)
@@ -1845,7 +2022,10 @@ impl MieryApp {
                     0.0
                 };
                 // Animated bar: visibly alive even when one big file takes a while.
-                ui.add(egui::ProgressBar::new(frac).show_percentage().animate(true));
+                ui.add(egui::ProgressBar::new(frac).show_percentage().animate(!paused));
+                if paused {
+                    ui.label(RichText::new(l!("⏸ Pausiert", "⏸ Paused")).strong());
+                }
                 let secs = job.started.elapsed().as_secs();
                 let speed = if secs > 0 { p.bytes_done / secs } else { 0 };
                 ui.label(lf!("{} / {} Dateien · {} / {} · {}:{:02} · {}/s", "{} / {} files · {} / {} · {}:{:02} · {}/s",
@@ -1866,17 +2046,30 @@ impl MieryApp {
                         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let _ = job.answer_tx.send(crate::ops::OverwriteAnswer::Cancel);
                     }
+                    let label = if paused { l!("Fortsetzen", "Resume") } else { l!("Pause", "Pause") };
+                    if ui.button(label).clicked() {
+                        job.paused.store(!paused, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if ui.button(l!("Im Hintergrund", "In background")).on_hover_text(l!("Fenster wegräumen – der Vorgang läuft weiter (unten rechts wieder einblenden)", "Put the window away – the operation goes on (bring it back at the bottom right)")).clicked() {
+                        hide = true;
+                    }
                     if !queued.is_empty() && ui.button(l!("Warteschlange leeren", "Clear queue")).clicked() {
                         drop_queue = true;
                     }
                 });
             });
+        }
         drop(p);
+        if let Some((src, dst)) = question {
+            crate::dialogs::overwrite_modal(ctx, &src, &dst, &job.answer_tx);
+        } else if let Some((needed, free)) = space_question {
+            crate::dialogs::space_modal(ctx, needed, free, &job.answer_tx);
+        }
         if drop_queue {
             self.job_queue.clear();
         }
-        if let Some((src, dst)) = question {
-            crate::dialogs::overwrite_modal(ctx, &src, &dst, &job.answer_tx);
+        if hide {
+            self.job_hidden = true;
         }
     }
 
@@ -2072,6 +2265,9 @@ const FONT_MIN: f32 = 0.6;
 const FONT_MAX: f32 = 2.5;
 
 /// Ctrl+Plus / Ctrl+Minus: next font size in 10 % steps.
+/// Narrower than this, the window shows one panel at a time.
+const SINGLE_PANEL_BELOW: f32 = 560.0;
+
 pub fn step_font(scale: f32, dir: i32) -> f32 {
     let steps = (scale * 10.0).round() as i32 + dir;
     (steps as f32 / 10.0).clamp(FONT_MIN, FONT_MAX)
@@ -2176,11 +2372,60 @@ impl eframe::App for MieryApp {
         let mut left_actions = Vec::new();
         let mut right_actions = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
-            let rects = ui.columns(2, |cols| {
-                let qv_left = self.quick_view && self.right_active;
-                let qv_right = self.quick_view && !self.right_active;
+            // Two panels with a divider that can be dragged (double-click: centre).
+            let full = ui.available_rect_before_wrap();
+            let gap = 8.0;
+            let usable = (full.width() - gap).max(1.0);
+            let split = if self.cfg.split.is_finite() { self.cfg.split.clamp(0.15, 0.85) } else { 0.5 };
+            let left_w = (usable * split).round();
+            // Tiny windows (or on request): only the active panel, in full width.
+            let single = self.cfg.single_panel || full.width() < SINGLE_PANEL_BELOW;
+            let (left_rect, right_rect) = if single {
+                (full, full)
+            } else {
+                let l = egui::Rect::from_min_size(full.min, egui::vec2(left_w, full.height()));
+                (l, egui::Rect::from_min_max(egui::pos2(l.right() + gap, full.top()), full.max))
+            };
+            let grip = if single { egui::Rect::NOTHING } else { egui::Rect::from_min_max(left_rect.right_top(), right_rect.left_bottom()) };
+            let r = ui.interact(grip, ui.id().with("panel_divider"), egui::Sense::click_and_drag());
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if r.double_clicked() {
+                self.cfg.split = 0.5;
+            } else if r.dragged()
+                && let Some(p) = r.interact_pointer_pos()
+            {
+                self.cfg.split = ((p.x - gap / 2.0 - full.left()) / usable).clamp(0.15, 0.85);
+            }
+            let stroke = if r.dragged() {
+                ui.visuals().widgets.active.fg_stroke
+            } else if r.hovered() {
+                ui.visuals().widgets.hovered.fg_stroke
+            } else {
+                ui.visuals().widgets.noninteractive.bg_stroke
+            };
+            if !single {
+                ui.painter().vline(grip.center().x, grip.y_range(), stroke);
+            }
+            let view = panel::View { ext_column: self.cfg.ext_column, thumbs: self.cfg.thumbnails.then_some(&self.thumbs) };
+            let mut cols: Vec<egui::Ui> = [left_rect, right_rect]
+                .into_iter()
+                .map(|rect| {
+                    let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+                    col.set_clip_rect(rect.intersect(ui.clip_rect()));
+                    col.set_width(rect.width());
+                    col
+                })
+                .collect();
+            let rects = {
+                let qv_left = self.quick_view && self.right_active && !single;
+                let qv_right = self.quick_view && !self.right_active && !single;
                 for (i, col) in cols.iter_mut().enumerate() {
                     let is_right = i == 1;
+                    if single && is_right != self.right_active {
+                        continue;
+                    }
                     let show_qv = if is_right { qv_right } else { qv_left };
                     if show_qv {
                         let src = if is_right { &self.left } else { &self.right };
@@ -2205,13 +2450,15 @@ impl eframe::App for MieryApp {
                         };
                         self.qv.show(col, target.as_deref(), info);
                     } else if is_right {
-                        right_actions = panel::show_panel(col, &mut self.right, "right", self.right_active, d, self.cfg.drive_bar, &cut);
+                        right_actions = panel::show_panel(col, &mut self.right, "right", self.right_active, d, self.cfg.drive_bar, &cut, &view);
                     } else {
-                        left_actions = panel::show_panel(col, &mut self.left, "left", !self.right_active, d, self.cfg.drive_bar, &cut);
+                        left_actions = panel::show_panel(col, &mut self.left, "left", !self.right_active, d, self.cfg.drive_bar, &cut, &view);
                     }
                 }
-                [cols[0].min_rect(), cols[1].min_rect()]
-            });
+                let rect = |i: usize| if single && (i == 1) != self.right_active { egui::Rect::NOTHING } else { cols[i].min_rect() };
+                [rect(0), rect(1)]
+            };
+            ui.advance_cursor_after_rect(full);
             self.panel_rects = rects;
         });
         self.handle_panel_actions(left_actions, false, &ctx);
@@ -2224,6 +2471,7 @@ impl eframe::App for MieryApp {
         for v in &mut self.viewers {
             v.show(&ctx);
         }
+        self.log_window(&ctx);
         self.viewers.retain(|v| v.open);
         for c in &mut self.compares {
             c.show(&ctx, &self.cfg.editor);
@@ -2278,6 +2526,8 @@ impl eframe::App for MieryApp {
         self.cfg.right_tabs = self.right.tab_paths();
         self.cfg.left_active = self.left.active;
         self.cfg.right_active = self.right.active;
+        self.cfg.left_sort = Some((self.left.tab().sort, self.left.tab().desc));
+        self.cfg.right_sort = Some((self.right.tab().sort, self.right.tab().desc));
         eframe::set_value(storage, STORAGE_KEY, &self.cfg);
     }
 }

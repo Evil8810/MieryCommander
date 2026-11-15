@@ -754,6 +754,10 @@ git pull && cargo build --release"
                     reload |= ui.checkbox(&mut self.cfg.dirs_first, l!("Ordner zuerst", "Folders first")).changed();
                     ui.checkbox(&mut self.cfg.delete_to_trash, l!("F8 löscht in den Papierkorb", "F8 moves to the trash"));
                     ui.checkbox(&mut self.cfg.confirm_delete, l!("Löschen bestätigen", "Confirm deletion"));
+                    ui.checkbox(&mut self.cfg.verify_copy, l!("Kopien nach dem Kopieren prüfen (dauert etwa doppelt so lange)", "Verify copies after copying (takes about twice as long)"))
+                        .on_hover_text(l!("Jede kopierte Datei wird noch einmal gelesen und mit der Quelle verglichen", "Every copied file is read again and compared with its source"));
+                    ui.checkbox(&mut self.cfg.ext_column, l!("Endung in eigener Spalte", "Extension in its own column"));
+                    ui.checkbox(&mut self.cfg.thumbnails, l!("Vorschaubilder für Fotos", "Thumbnails for pictures"));
                     ui.add_space(6.0);
                     egui::Grid::new("settings_grid").num_columns(2).show(ui, |ui| {
                         ui.label("Editor (F4):");
@@ -1311,6 +1315,29 @@ pub fn overwrite_modal(ctx: &egui::Context, src: &Path, dst: &Path, tx: &Sender<
     });
 }
 
+/// The target drive has less free space than the job needs.
+pub fn space_modal(ctx: &egui::Context, needed: u64, free: u64, tx: &Sender<OverwriteAnswer>) {
+    egui::Modal::new(egui::Id::new("no_space")).show(ctx, |ui| {
+        ui.set_max_width(480.0);
+        ui.heading(l!("Zu wenig Platz am Ziel", "Not enough space at the target"));
+        ui.label(lf!("Benötigt: {} · Frei: {}", "Needed: {} · Free: {}", fsutil::format_size_short(needed), fsutil::format_size_short(free)));
+        ui.label(RichText::new(l!("Wenn dabei Dateien ersetzt werden, kann es trotzdem reichen.", "If files get replaced it may still fit.")).small().weak());
+        ui.add_space(8.0);
+        let mut answer = None;
+        ui.horizontal(|ui| {
+            if ui.button(l!("Abbrechen", "Cancel")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                answer = Some(OverwriteAnswer::Cancel);
+            }
+            if ui.button(l!("Trotzdem starten", "Start anyway")).clicked() {
+                answer = Some(OverwriteAnswer::Overwrite);
+            }
+        });
+        if let Some(a) = answer {
+            let _ = tx.send(a);
+        }
+    });
+}
+
 /// Shortcut list for Help → Keyboard shortcuts (left column goes through `i18n::keys`).
 fn keys_table() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -1326,6 +1353,9 @@ fn keys_table() -> Vec<(&'static str, &'static str)> {
     ("Klick auf den Namen", l!("Markierte Datei direkt in der Liste umbenennen (Enter übernimmt, Esc bricht ab)", "Rename the selected file right in the list (Enter accepts, Esc cancels)")),
     ("Strg+Bild↓", l!("Datei als Archiv öffnen (auch Office-Dokumente)", "Open a file as archive (office documents too)")),
     ("Shift+Enter", l!("Öffnen mit… (Programm wählen)", "Open with… (choose an application)")),
+    ("Alt+Shift+Enter", l!("Größe aller Ordner berechnen", "Calculate the size of all folders")),
+    ("Strg+Shift+M", l!("Letzte Markierung wiederherstellen", "Restore the last selection")),
+    ("Strg+L", l!("Protokoll der Vorgänge", "Operations log")),
     ("Strg++ / Strg+- / Strg+0", l!("Schrift größer / kleiner / normal (auch Strg+Mausrad)", "Bigger / smaller / normal font (also Ctrl+mouse wheel)")),
     ("Rechtsklick", l!("Kontextmenü (auf freier Fläche: Einfügen, Neuer Ordner, …)", "Context menu (on empty space: paste, new folder, …)")),
     ("F3", l!("Ansehen (Text/Hex/Bild)", "View (text/hex/image)")),

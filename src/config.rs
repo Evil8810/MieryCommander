@@ -41,6 +41,19 @@ pub struct Config {
     pub right_tabs: Vec<PathBuf>,
     pub left_active: usize,
     pub right_active: usize,
+    /// Share of the width the left panel gets (the divider can be dragged).
+    pub split: f32,
+    /// Compare every copied file with its source (takes about twice as long).
+    pub verify_copy: bool,
+    /// Extension in its own column (like Total Commander) or as part of the name.
+    pub ext_column: bool,
+    /// Show only the active panel (also chosen automatically in tiny windows).
+    pub single_panel: bool,
+    /// Small previews instead of icons for pictures.
+    pub thumbnails: bool,
+    /// Sort order of the panels: (key, descending).
+    pub left_sort: Option<(crate::panel::SortKey, bool)>,
+    pub right_sort: Option<(crate::panel::SortKey, bool)>,
 }
 
 impl Default for Config {
@@ -65,6 +78,13 @@ impl Default for Config {
             right_tabs: Vec::new(),
             left_active: 0,
             right_active: 0,
+            split: 0.5,
+            verify_copy: false,
+            ext_column: true,
+            single_panel: false,
+            thumbnails: false,
+            left_sort: None,
+            right_sort: None,
         }
     }
 }

@@ -18,10 +18,12 @@ mod smb;
 mod sync;
 mod update;
 mod ops;
+mod oplog;
 mod openwith;
 mod panel;
 mod rename;
 mod search;
+mod thumbs;
 mod viewer;
 #[cfg(windows)]
 mod winsys;

@@ -89,12 +89,30 @@ pub struct Progress {
     /// Files that could not go to the trash (network drives have none);
     /// the app then offers to delete them permanently.
     pub no_trash: Vec<PathBuf>,
+    /// The target drive looks too small: (needed, free). Answered like an
+    /// overwrite question (`Overwrite` = go on anyway, `Cancel`).
+    pub space_question: Option<(u64, u64)>,
+}
+
+/// Compare every copied file with its source afterwards (setting).
+pub static VERIFY: AtomicBool = AtomicBool::new(false);
+
+/// Name of the neighbour file a copy is written to while it replaces an
+/// existing file; the old file stays untouched until the new one is complete.
+pub fn part_path(target: &Path) -> PathBuf {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    target.with_file_name(format!(".{name}.miery-part"))
 }
 
 pub struct Job {
     pub kind: JobKind,
+    /// What the job works on; their marks are cleared once it went through.
+    pub sources: Vec<PathBuf>,
+    pub dest: PathBuf,
     pub progress: Arc<Mutex<Progress>>,
     pub cancel: Arc<AtomicBool>,
+    /// The worker waits while this is set.
+    pub paused: Arc<AtomicBool>,
     pub answer_tx: Sender<OverwriteAnswer>,
     pub started: std::time::Instant,
 }
@@ -109,17 +127,38 @@ impl Job {
         ctx: eframe::egui::Context,
         policy: Option<OverwriteAnswer>,
     ) -> Job {
+        Self::start_inner(kind, sources, dest, ctx, policy, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// A job that waits from the first moment on (until `paused` is cleared).
+    #[cfg(test)]
+    pub fn start_paused(kind: JobKind, sources: Vec<PathBuf>, dest: PathBuf, ctx: eframe::egui::Context, paused: Arc<AtomicBool>) -> Job {
+        Self::start_inner(kind, sources, dest, ctx, None, paused)
+    }
+
+    fn start_inner(
+        kind: JobKind,
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        ctx: eframe::egui::Context,
+        policy: Option<OverwriteAnswer>,
+        paused: Arc<AtomicBool>,
+    ) -> Job {
         let progress = Arc::new(Mutex::new(Progress::default()));
         let cancel = Arc::new(AtomicBool::new(false));
         let (answer_tx, answer_rx) = channel();
         let mut worker = Worker {
             progress: progress.clone(),
             cancel: cancel.clone(),
+            paused: paused.clone(),
             answers: answer_rx,
             policy,
+            skipped: 0,
             ctx,
         };
         let k = kind.clone();
+        let job_sources = sources.clone();
+        let job_dest = dest.clone();
         std::thread::spawn(move || {
             worker.run(&k, &sources, &dest);
             worker.progress.lock().unwrap().finished = true;
@@ -127,8 +166,11 @@ impl Job {
         });
         Job {
             kind,
+            sources: job_sources,
+            dest: job_dest,
             progress,
             cancel,
+            paused,
             answer_tx,
             started: std::time::Instant::now(),
         }
@@ -138,9 +180,12 @@ impl Job {
 struct Worker {
     progress: Arc<Mutex<Progress>>,
     cancel: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     answers: Receiver<OverwriteAnswer>,
     /// Sticky answer after "all" choices.
     policy: Option<OverwriteAnswer>,
+    /// Existing targets that were left alone; their sources must survive a move.
+    skipped: u64,
     ctx: eframe::egui::Context,
 }
 
@@ -156,8 +201,67 @@ enum Decision {
 }
 
 impl Worker {
+    /// Every loop asks this between files and blocks of data – so a paused
+    /// job simply waits here.
     fn cancelled(&self) -> bool {
+        while self.paused.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Before copying: is there room for it? If not, ask whether to go on
+    /// (files that get replaced free space again, so it may still fit).
+    fn enough_space(&mut self, dest: &Path, sources: &[PathBuf], needed: u64, is_move: bool) -> bool {
+        let dir = if dest.is_dir() { dest } else { dest.parent().unwrap_or(dest) };
+        // Moving within one file system needs no extra room.
+        #[cfg(unix)]
+        if is_move {
+            use std::os::unix::fs::MetadataExt;
+            let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
+            let target_dev = dev(dir);
+            if target_dev.is_some() && sources.iter().all(|s| s.parent().and_then(dev) == target_dev) {
+                return true;
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (is_move, sources);
+        let Some((free, _)) = crate::fsutil::disk_space(dir) else { return true };
+        if needed <= free {
+            return true;
+        }
+        self.progress.lock().unwrap().space_question = Some((needed, free));
+        self.ctx.request_repaint();
+        let a = self.answers.recv().unwrap_or(OverwriteAnswer::Cancel);
+        self.progress.lock().unwrap().space_question = None;
+        if a == OverwriteAnswer::Cancel {
+            self.cancel.store(true, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Read both files again and compare them byte by byte.
+    fn verify(&self, src: &Path, copy: &Path) -> std::io::Result<()> {
+        let different = || std::io::Error::other(l!("Prüfung fehlgeschlagen: die Kopie unterscheidet sich von der Quelle", "verification failed: the copy differs from the source"));
+        let (mut a, mut b) = (File::open(src)?, File::open(copy)?);
+        if a.metadata()?.len() != b.metadata()?.len() {
+            return Err(different());
+        }
+        let (mut ba, mut bb) = (vec![0u8; 1 << 18], vec![0u8; 1 << 18]);
+        loop {
+            if self.cancelled() {
+                return Err(std::io::Error::other(l!("abgebrochen", "cancelled")));
+            }
+            let n = read_full(&mut a, &mut ba)?;
+            let m = read_full(&mut b, &mut bb)?;
+            if n != m || ba[..n] != bb[..m] {
+                return Err(different());
+            }
+            if n == 0 {
+                return Ok(());
+            }
+        }
     }
 
     fn err(&self, msg: String) {
@@ -188,6 +292,9 @@ impl Worker {
                     p.bytes_total = bytes;
                 }
                 let is_move = matches!(kind, JobKind::Move);
+                if !self.enough_space(dest, sources, bytes, is_move) {
+                    return;
+                }
                 // A single source and a destination that isn't an existing dir = rename/copy-as.
                 let single_target = sources.len() == 1 && !dest.is_dir();
                 for src in sources {
@@ -316,7 +423,10 @@ impl Worker {
         let newer = matches!((src_mtime, dst_mtime), (Some(a), Some(b)) if a > b);
         match self.decide(src, target, newer) {
             Decision::Write => Target::Write(target.to_path_buf()),
-            Decision::Skip => Target::Skip,
+            Decision::Skip => {
+                self.skipped += 1;
+                Target::Skip
+            }
             Decision::Rename => {
                 let dir = target.parent().unwrap_or(Path::new("/"));
                 let name = target.file_name().unwrap_or_default().to_string_lossy();
@@ -368,26 +478,40 @@ impl Worker {
                 && let Err(e) = self.copy_file(src, &t, &meta)
             {
                 self.err(format!("{}: {e}", src.to_string_lossy()));
-                let _ = fs::remove_file(&t);
             }
             self.file_done();
         }
     }
 
+    /// Copy one file. An existing target is only replaced once the copy is
+    /// complete (and verified): until then the data goes to a neighbour file.
+    /// Nothing half-written stays behind after an error or a cancel.
     fn copy_file(&self, src: &Path, target: &Path, meta: &fs::Metadata) -> std::io::Result<()> {
         self.set_current(src);
-        let mut input = File::open(src)?;
-        let mut output = File::create(target)?;
-        self.pump(&mut input, &mut output)?;
-        drop(output);
-        let _ = fs::set_permissions(target, meta.permissions());
-        if let Ok(mtime) = meta.modified() {
-            let _ = File::options()
-                .write(true)
-                .open(target)
-                .and_then(|f| f.set_modified(mtime));
+        let replaces = fs::symlink_metadata(target).is_ok();
+        let out = if replaces { part_path(target) } else { target.to_path_buf() };
+        let result = (|| {
+            let mut input = File::open(src)?;
+            let mut output = File::create(&out)?;
+            self.pump(&mut input, &mut output)?;
+            output.flush()?;
+            drop(output);
+            if VERIFY.load(Ordering::Relaxed) {
+                self.verify(src, &out)?;
+            }
+            let _ = fs::set_permissions(&out, meta.permissions());
+            if let Ok(mtime) = meta.modified() {
+                let _ = File::options().write(true).open(&out).and_then(|f| f.set_modified(mtime));
+            }
+            if replaces {
+                fs::rename(&out, target)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&out);
         }
-        Ok(())
+        result
     }
 
     fn pump(&self, input: &mut dyn Read, output: &mut dyn Write) -> std::io::Result<()> {
@@ -418,18 +542,43 @@ impl Worker {
                 p.bytes_done += bytes;
                 return;
             }
-        } else if src.is_file()
-            && let Target::Write(t) = self.resolve_target(src, target)
-            && fs::rename(src, &t).is_ok()
-        {
+        } else if src.is_file() {
+            // Ask once; a skipped file stays where it is.
+            let t = match self.resolve_target(src, target) {
+                Target::Write(t) => t,
+                Target::Skip => {
+                    self.file_done();
+                    return;
+                }
+            };
+            if fs::rename(src, &t).is_ok() {
+                self.file_done();
+                return;
+            }
+            // Other file system: copy to the chosen name, then delete the source.
+            let Ok(meta) = fs::metadata(src) else {
+                self.err(lf!("{}: nicht lesbar", "{}: not readable", src.to_string_lossy()));
+                return;
+            };
+            match self.copy_file(src, &t, &meta) {
+                Ok(()) if !self.cancelled() => {
+                    if let Err(e) = fs::remove_file(src) {
+                        self.err(format!("{}: {e}", src.to_string_lossy()));
+                    }
+                }
+                Ok(()) => {}
+                Err(e) => self.err(format!("{}: {e}", src.to_string_lossy())),
+            }
             self.file_done();
             return;
         }
         // Cross-device or merging into an existing dir: copy, then delete what was copied.
+        // Never delete a source in which something was skipped or went wrong.
         let errors_before = self.progress.lock().unwrap().errors.len();
+        let skipped_before = self.skipped;
         self.copy_item(src, target);
-        let failed = self.progress.lock().unwrap().errors.len() > errors_before;
-        if !failed && !self.cancelled() && self.policy != Some(OverwriteAnswer::SkipAll) {
+        let failed = self.progress.lock().unwrap().errors.len() > errors_before || self.skipped > skipped_before;
+        if !failed && !self.cancelled() {
             if let Err(e) = remove_any(src) {
                 self.err(format!("{}: {e}", src.to_string_lossy()));
             }
@@ -1250,4 +1399,16 @@ impl archive::Sink for ExtractSink<'_> {
     fn cancelled(&self) -> bool {
         self.worker.cancelled()
     }
+}
+
+/// Fill `buf` as far as the file goes (a single `read` may return less).
+fn read_full(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }

@@ -72,6 +72,12 @@ Leiste unten benutzen; `Strg`-Kürzel sind dort `Cmd`-Kürzel. `Cmd+Backspace` l
 - **Updates:** sucht beim Start (abschaltbar) nach einer neuen Version und installiert sie auf Wunsch direkt – AppImage, tar.gz-Installation, macOS-App und Windows-.exe; Hilfe → Nach Updates suchen
 - **Dateinamen in jeder Schrift** (Japanisch, Chinesisch, Koreanisch, Arabisch, Hebräisch, Thai, …) über die Schriften des Systems
 - **F3** Lister (Text, Hex, Bilder) · **F4** Editor (konfigurierbar) · **F5/F6** Kopieren/Verschieben im Hintergrund mit Fortschritt, Abbrechen und **Überschreiben-Dialog** (Alle / Ältere / Überspringen / Umbenennen) · **F7** Ordner (auch `a/b/c`) · **F8** Papierkorb, `Shift+F8` endgültig; wo es keinen Papierkorb gibt (Netzlaufwerk/NAS), fragt die App, ob endgültig gelöscht werden soll
+- **Sicher kopieren:** eine vorhandene Zieldatei wird erst ersetzt, wenn die neue vollständig da ist (bis dahin liegt sie als `.name.miery-part` daneben) – bricht etwas ab, bleibt die alte Datei unversehrt. Vor dem Start wird der **freie Platz am Ziel** geprüft; auf Wunsch wird jede Kopie **noch einmal gelesen und mit der Quelle verglichen** (Einstellungen). Beim Verschieben bleibt alles Übersprungene an seinem Platz
+- **Pause und Hintergrund:** das Fortschrittsfenster hat **Pause/Fortsetzen** und **Im Hintergrund** (unten rechts wieder einblenden); nach einem erfolgreichen Vorgang sind die Dateien nicht mehr markiert, `Strg+Shift+M` holt die letzte Markierung zurück
+- **Protokoll** (`Strg+L`, Menü Befehle): was wann wohin kopiert, verschoben oder gelöscht wurde, mit Fehlern zum Aufklappen; liegt als Textdatei im Datenordner des Benutzers und bleibt über den Neustart erhalten
+- **Kleine Fenster:** der Trenner zwischen den Panels lässt sich ziehen (Doppelklick = Mitte), schmale Panels blenden Datum und Rechte aus, lange Namen werden **in der Mitte gekürzt** (Anfang und Ende bleiben lesbar, voller Name beim Draufzeigen), die Endung kann Teil des Namens sein statt eigener Spalte, und sehr schmale Fenster zeigen nur das aktive Panel (auch fest: Ansicht → Nur ein Panel). Spaltenbreiten und Sortierung werden gemerkt
+- **Vorschaubilder** für Fotos in der Liste (Ansicht → Vorschaubilder), im Hintergrund berechnet
+- **Ordnergrößen:** Leertaste für einen Ordner, `Alt+Shift+Enter` für alle im Panel
 - **Warteschlange:** ein weiterer Kopier-/Verschiebevorgang während einer laufenden Operation wird hinten angestellt und startet von selbst; das Fortschrittsfenster lässt sich verschieben und einklappen
 - **Archive wie Ordner:** ZIP (auch .jar/.cbz; Office-Dokumente wie .odt/.docx öffnet Enter im passenden Programm, `Strg+Bild↓` zeigt ihren Inhalt), **7z**, **RAR** (nur lesen), **TAR** mit .gz/.bz2/.xz/.zst sowie einzelne .gz/.bz2/.xz/.zst-Dateien – öffnen, Dateien herauskopieren (F5, Strg+C/V), **in ZIP- und TAR-Archive hineinkopieren oder -verschieben** (F5/F6, Strg+V, Ziehen) und **darin löschen** (F8) – das Archiv wird dabei sicher neu geschrieben, das Original erst am Ende ersetzt –, ansehen (F3), entpacken (**Smart hier entpacken** `Alt+Shift+F9` – eigener Ordner nur, wenn das Archiv mehrere Dateien direkt enthält; **Hier entpacken**; **Entpacken nach…** `Alt+F9`, auch mehrere Archive auf einmal), packen (`Alt+F5`, Format über die Endung: .zip, .7z, .tar, .tar.gz, .tar.xz, .tar.bz2, .tar.zst). Pfade wie `../` in Archiven werden abgewiesen
 - **Branch-View** (`Strg+Shift+B`): alle Dateien aller Unterordner in einer Liste
@@ -115,11 +121,13 @@ Alle Kürzel: Menü **Hilfe → Tastenkürzel**.
 | `src/ftp.rs` | FTP/FTPS (suppaftp + rustls) |
 | `src/sftp.rs` | SFTP (russh, reines Rust), Host-Key-Prüfung, SSH-Agent/Schlüssel |
 | `src/fsutil.rs` | Dateisystem-Helfer, Formatierung, Mounts, externe Programme |
+| `src/oplog.rs` | Protokoll der Vorgänge |
+| `src/thumbs.rs` | Vorschaubilder für die Dateiliste |
 | `src/tests.rs` | Headless-UI-Tests mit egui_kittest |
 
 ## Noch nicht umgesetzt
 
-Thumbnail-Ansicht, Video-Vorschau, Protokoll der Dateioperationen, eigene Spalten,
+Video-Vorschau, eigene Spalten,
 separate Baumansicht, HTTP-Proxy für FTP, Plugins.
 
 ## Lizenz

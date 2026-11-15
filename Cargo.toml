@@ -8,7 +8,7 @@ bzip2 = "0.6.1"
 chrono = "0.4.45"
 dirs = "7.0.0"
 eframe = { version = "0.36.2", features = ["persistence"] }
-egui_extras = { version = "0.36.2", features = ["all_loaders"] }
+egui_extras = { version = "0.36.2", features = ["all_loaders", "serde"] }
 flate2 = "1.1.10"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 keyring = "4.2.0"

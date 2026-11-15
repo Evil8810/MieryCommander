@@ -95,7 +95,7 @@ impl Location {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SortKey {
     Name,
     Ext,
@@ -110,6 +110,8 @@ pub struct Tab {
     pub entries: Vec<Entry>,
     pub cursor: usize,
     pub marked: HashSet<String>,
+    /// The marks an operation cleared; "restore selection" brings them back.
+    pub last_marked: HashSet<String>,
     pub sort: SortKey,
     pub desc: bool,
     pub filter: String,
@@ -200,6 +202,7 @@ impl Tab {
             entries: Vec::new(),
             cursor: 0,
             marked: HashSet::new(),
+            last_marked: HashSet::new(),
             sort: SortKey::Name,
             desc: false,
             filter: String::new(),
@@ -632,6 +635,43 @@ impl Tab {
             .collect()
     }
 
+    /// Bring back the marks the last operation cleared (entries still there).
+    pub fn restore_marks(&mut self) -> usize {
+        let names: HashSet<String> =
+            self.entries.iter().filter(|e| !e.is_parent && self.last_marked.contains(&e.name)).map(|e| e.name.clone()).collect();
+        let n = names.len();
+        if n > 0 {
+            self.marked = names;
+        }
+        n
+    }
+
+    /// Sizes of all folders in the list, one after another in one thread.
+    pub fn calc_all_sizes(&mut self) {
+        if self.loc.dir().is_none() {
+            return;
+        }
+        let todo: Vec<(String, PathBuf)> = self
+            .entries
+            .iter()
+            .filter(|e| e.is_dir && !e.is_parent && !self.dir_sizes.contains_key(&e.name) && !self.sizing.contains(&e.name))
+            .map(|e| (e.name.clone(), e.path.clone()))
+            .collect();
+        if todo.is_empty() {
+            return;
+        }
+        self.sizing.extend(todo.iter().map(|(n, _)| n.clone()));
+        let tx = self.size_tx.clone();
+        std::thread::spawn(move || {
+            for (name, path) in todo {
+                if tx.send((name, fsutil::dir_size(&path))).is_err() {
+                    return; // the tab is gone
+                }
+                fsutil::wake_ui();
+            }
+        });
+    }
+
     pub fn calc_dir_size(&mut self, e: &Entry) {
         if !e.is_dir || e.is_parent || self.loc.dir().is_none() {
             return;
@@ -822,6 +862,43 @@ pub struct DragFiles {
     pub count: usize,
 }
 
+/// How the file list is drawn (settings).
+pub struct View<'a> {
+    /// Extension in its own column, or as part of the name.
+    pub ext_column: bool,
+    /// Previews for pictures (bigger rows); `None` = normal icons.
+    pub thumbs: Option<&'a crate::thumbs::Thumbs>,
+}
+
+/// Shorten `text` in the middle so that it fits into `avail`: the start and
+/// the end of a file name are what tells files apart. `None` = it fits.
+fn elide_middle(painter: &egui::Painter, text: &str, font: &egui::FontId, avail: f32) -> Option<String> {
+    let width = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size().x;
+    if width(text) <= avail {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let build = |keep: usize| {
+        let tail = (keep / 3).min(12);
+        let head = keep - tail;
+        let mut s: String = chars[..head].iter().collect();
+        s.push('…');
+        s.extend(&chars[chars.len() - tail..]);
+        s
+    };
+    let (mut lo, mut hi) = (0, chars.len().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(&build(mid)) <= avail {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Some(build(lo))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn show_panel(
     ui: &mut egui::Ui,
     panel: &mut Panel,
@@ -830,6 +907,7 @@ pub fn show_panel(
     dirs_first: bool,
     drive_bar: crate::config::DriveBar,
     cut: &[PathBuf],
+    view: &View,
 ) -> Vec<PanelAction> {
     let mut actions = Vec::new();
     let colors = PanelColors::for_visuals(ui.visuals());
@@ -1080,7 +1158,12 @@ pub fn show_panel(
     // --- File table -------------------------------------------------------
     let status_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
     let table_h = (ui.available_height() - status_h).max(50.0);
-    let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    let text_h = ui.text_style_height(&egui::TextStyle::Body);
+    // Previews only where the files can be read directly.
+    let thumbs = view.thumbs.filter(|_| tab.loc.dir().is_some());
+    let row_h = if thumbs.is_some() { text_h * 2.6 } else { text_h + 4.0 };
+    let head_h = text_h + 6.0;
+    let ext_column = view.ext_column;
     let mut sort_click: Option<SortKey> = None;
     let mut row_clicked: Option<(usize, egui::Modifiers, bool)> = None;
     // Renaming in the list: start it once the wait for a double-click is over.
@@ -1105,6 +1188,11 @@ pub fn show_panel(
     let mut row_drag_start: Option<usize> = None;
     let mut row_drop: Option<(Arc<DragFiles>, Location)> = None;
     let is_right = side == "right";
+    // Narrow panels (small screens, big fonts) drop the less important
+    // columns, so that the file names stay readable.
+    let panel_w = ui.available_width();
+    let show_attr = panel_w >= 560.0;
+    let show_date = panel_w >= 400.0;
 
     let scroll_to = if tab.scroll_to_cursor {
         tab.scroll_to_cursor = false;
@@ -1117,15 +1205,24 @@ pub fn show_panel(
     // (not on a row) opens the folder menu (paste, new folder, …).
     let background = ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
         let mut table = TableBuilder::new(ui)
-            .id_salt(format!("{side}_table"))
+            // Own column widths per layout (the widths are stored by index).
+            .id_salt(format!("{side}_table_{}{}{}", show_date as u8, show_attr as u8, ext_column as u8))
             .striped(true)
             .sense(Sense::click_and_drag())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::remainder().at_least(140.0).clip(true))
-            .column(Column::initial(55.0).at_least(30.0).resizable(true).clip(true))
-            .column(Column::initial(90.0).at_least(50.0).resizable(true).clip(true))
-            .column(Column::initial(118.0).at_least(60.0).resizable(true).clip(true))
-            .column(Column::initial(80.0).at_least(40.0).clip(true))
+            .column(Column::remainder().at_least(120.0).clip(true));
+        if ext_column {
+            table = table.column(Column::initial(if show_date { 55.0 } else { 44.0 }).at_least(30.0).resizable(true).clip(true));
+        }
+        let mut table = table
+            .column(Column::initial(if show_date { 90.0 } else { 72.0 }).at_least(50.0).resizable(true).clip(true));
+        if show_date {
+            table = table.column(Column::initial(118.0).at_least(60.0).resizable(true).clip(true));
+        }
+        if show_attr {
+            table = table.column(Column::initial(80.0).at_least(40.0).clip(true));
+        }
+        let mut table = table
             .min_scrolled_height(table_h)
             .max_scroll_height(table_h)
             .auto_shrink([false, false]);
@@ -1143,13 +1240,16 @@ pub fn show_panel(
             }
         };
         table
-            .header(row_h + 2.0, |mut header| {
+            .header(head_h, |mut header| {
                 for (k, label) in [
                     (SortKey::Name, "Name"),
                     (SortKey::Ext, l!("Erw.", "Ext")),
                     (SortKey::Size, l!("Größe", "Size")),
                     (SortKey::Date, l!("Datum", "Date")),
                 ] {
+                    if k == SortKey::Date && !show_date || k == SortKey::Ext && !ext_column {
+                        continue;
+                    }
                     header.col(|ui| {
                         if ui
                             .add(egui::Button::new(RichText::new(format!("{label}{}", arrow(k))).strong()).frame(false))
@@ -1159,9 +1259,11 @@ pub fn show_panel(
                         }
                     });
                 }
-                header.col(|ui| {
-                    ui.strong(l!("Rechte", "Attr"));
-                });
+                if show_attr {
+                    header.col(|ui| {
+                        ui.strong(l!("Rechte", "Attr"));
+                    });
+                }
             })
             .body(|body| {
                 body.rows(row_h, tab.entries.len(), |mut row| {
@@ -1186,7 +1288,7 @@ pub fn show_panel(
                     let (stem, ext) = e.split_name();
                     let name = if e.is_parent {
                         "..".to_string()
-                    } else if ext.is_empty() {
+                    } else if ext.is_empty() || !ext_column {
                         e.name.clone()
                     } else {
                         stem.to_string()
@@ -1225,16 +1327,46 @@ pub fn show_panel(
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        let mut label = txt(format!("{} {}", icon_for(e), name));
+                        let mut full = format!("{} {}", icon_for(e), name);
+                        if let Some(thumbs) = thumbs {
+                            // A square slot in front of the name: preview or icon.
+                            let side = row_h - 4.0;
+                            let (slot, _) = ui.allocate_exact_size(egui::vec2(side, side), Sense::hover());
+                            let tex = (!e.is_dir && crate::thumbs::is_picture(e.ext()))
+                                .then(|| thumbs.get(ui.ctx(), &e.path, e.modified))
+                                .flatten();
+                            match tex {
+                                Some(tex) => {
+                                    let size = tex.size_vec2();
+                                    let fit = size * (side / size.x.max(size.y)).min(1.0);
+                                    egui::Image::new(&tex).paint_at(ui, egui::Rect::from_center_size(slot.center(), fit));
+                                }
+                                None => {
+                                    let font = egui::FontId::proportional(text_h * 1.3);
+                                    ui.painter().text(slot.center(), egui::Align2::CENTER_CENTER, icon_for(e), font, ui.visuals().text_color());
+                                }
+                            }
+                            full = name.clone();
+                        }
+                        let mut font = egui::TextStyle::Body.resolve(ui.style());
                         if e.is_dir {
                             // Folders in bold: easy to tell apart from files.
-                            label = label.family(crate::fonts::bold());
+                            font.family = crate::fonts::bold();
                         }
-                        ui.add(egui::Label::new(label).truncate().selectable(false));
+                        // Too long: shortened in the middle, in full on hover.
+                        let short = elide_middle(ui.painter(), &full, &font, ui.available_width() - 2.0);
+                        let elided = short.is_some();
+                        let label = txt(short.unwrap_or(full)).font(font);
+                        let r = ui.add(egui::Label::new(label).truncate().selectable(false).show_tooltip_when_elided(false));
+                        if elided && !e.is_parent {
+                            r.on_hover_text(e.name.as_str());
+                        }
                     });
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(txt(ext.to_string())).selectable(false));
-                    });
+                    if ext_column {
+                        row.col(|ui| {
+                            ui.add(egui::Label::new(txt(ext.to_string())).selectable(false));
+                        });
+                    }
                     row.col(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let s = if e.is_dir {
@@ -1249,13 +1381,17 @@ pub fn show_panel(
                             ui.add(egui::Label::new(txt(s)).selectable(false));
                         });
                     });
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(txt(fsutil::format_time(e.modified))).selectable(false));
-                    });
-                    row.col(|ui| {
-                        let m = if e.is_parent { String::new() } else { fsutil::format_mode(e.mode) };
-                        ui.add(egui::Label::new(txt(m).monospace()).selectable(false));
-                    });
+                    if show_date {
+                        row.col(|ui| {
+                            ui.add(egui::Label::new(txt(fsutil::format_time(e.modified))).selectable(false));
+                        });
+                    }
+                    if show_attr {
+                        row.col(|ui| {
+                            let m = if e.is_parent { String::new() } else { fsutil::format_mode(e.mode) };
+                            ui.add(egui::Label::new(txt(m).monospace()).selectable(false));
+                        });
+                    }
                     let resp = row.response();
                     // Drag & drop: rows can be dragged; folders accept drops.
                     if resp.drag_started() {
@@ -1402,7 +1538,7 @@ pub fn show_panel(
 
     // --- Status line ----------------------------------------------------------
     ui.horizontal(|ui| {
-        ui.label(RichText::new(tab.status_line()).small());
+        ui.add(egui::Label::new(RichText::new(tab.status_line()).small()).truncate());
         if !tab.quick_search.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(

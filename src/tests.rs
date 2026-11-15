@@ -126,6 +126,12 @@ fn f5_copies_marked_files_and_dirs() {
     assert_eq!(fs::read_to_string(r.path().join("dir/sub/c.txt")).unwrap(), "tief");
     assert!(!r.path().join("b.txt").exists());
     assert!(l.path().join("a.txt").exists(), "copy must keep the source");
+    assert!(h.state().left.tab().marked.is_empty(), "copied entries must no longer be marked");
+    // … but they can be brought back, and the operation is in the log.
+    panel_key(&mut h, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(h.state().left.tab().marked.len(), 2);
+    let dest = r.path().to_string_lossy().into_owned();
+    assert!(crate::oplog::records().iter().any(|rec| rec.ok && rec.dest.trim_end_matches(std::path::MAIN_SEPARATOR) == dest), "copy must be logged: {:?}", crate::oplog::records());
 }
 
 #[test]
@@ -2273,4 +2279,188 @@ fn second_copy_is_queued_and_progress_window_moves() {
     assert_no_job_errors(&h, "queued copies");
     assert_eq!(fs::read_to_string(db.path().join("eins.txt")).unwrap(), "1");
     assert_eq!(fs::read_to_string(db.path().join("zwei.txt")).unwrap(), "2");
+}
+
+#[test]
+fn narrow_window_keeps_file_names_readable() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let long = "Ein ziemlich langer Dateiname vom letzten Urlaub 2026.jpeg";
+    fs::write(l.path().join(long), "x").unwrap();
+    fs::write(r.path().join(long), "x").unwrap();
+    let name_width = |size: [f32; 2]| {
+        let mut h = Harness::builder().with_size(size).build_eframe(|cc| MieryApp::new(cc));
+        setup(&mut h, l.path(), r.path());
+        steps(&mut h, 3);
+        if let Ok(out) = std::env::var("MIERY_NARROW_SHOT") {
+            h.render().unwrap().save(format!("{out}/narrow-{}.png", size[0])).unwrap();
+        }
+        let dates = h.query_all_by_label("Datum").count();
+        let attrs = h.query_all_by_label("Rechte").count();
+        (dates, attrs)
+    };
+    assert_eq!(name_width([1280.0, 800.0]), (2, 2), "wide: all columns");
+    assert_eq!(name_width([1000.0, 700.0]), (2, 0), "medium: no attribute column");
+    assert_eq!(name_width([640.0, 400.0]), (0, 0), "narrow: name, extension and size only");
+}
+
+/// Wait for the overwrite question of the running job and click `answer`.
+fn answer_overwrite(h: &mut Harness<'_, MieryApp>, answer: &str) {
+    wait_until(h, "overwrite question", |app| app.job.as_ref().is_some_and(|j| j.progress.lock().unwrap().question.is_some()));
+    steps(h, 2);
+    h.get_by_label(answer).click();
+    h.step();
+}
+
+#[test]
+fn move_with_skip_keeps_the_source() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    // A single file …
+    fs::write(l.path().join("x.txt"), "neu").unwrap();
+    fs::write(r.path().join("x.txt"), "alt").unwrap();
+    // … and a folder that is merged into an existing one.
+    fs::create_dir_all(l.path().join("dir")).unwrap();
+    fs::create_dir_all(r.path().join("dir")).unwrap();
+    fs::write(l.path().join("dir/keep.txt"), "neu").unwrap();
+    fs::write(r.path().join("dir/keep.txt"), "alt").unwrap();
+    fs::write(l.path().join("dir/other.txt"), "x").unwrap();
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    select(&mut h, "x.txt");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    answer_overwrite(&mut h, "Überspringen");
+    wait_for_job(&mut h);
+    assert_eq!(fs::read_to_string(r.path().join("x.txt")).unwrap(), "alt");
+    assert_eq!(fs::read_to_string(l.path().join("x.txt")).unwrap(), "neu", "a skipped file must not be deleted");
+
+    select(&mut h, "dir");
+    panel_key(&mut h, Key::F6, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    answer_overwrite(&mut h, "Überspringen");
+    wait_for_job(&mut h);
+    assert_eq!(fs::read_to_string(r.path().join("dir/keep.txt")).unwrap(), "alt");
+    assert_eq!(fs::read_to_string(l.path().join("dir/keep.txt")).unwrap(), "neu", "a skipped file inside a moved folder must not be deleted");
+    assert!(r.path().join("dir/other.txt").exists());
+}
+
+#[test]
+fn divider_between_panels_can_be_dragged() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    let [a, b] = h.state().panel_rects;
+    assert!((a.width() - b.width()).abs() < 20.0, "starts in the middle");
+    let y = a.center().y;
+    let from = eframe::egui::pos2((a.right() + b.left()) / 2.0, y);
+    let to = eframe::egui::pos2(from.x + 200.0, y);
+    h.event(Event::PointerMoved(from));
+    h.step();
+    h.event(Event::PointerButton { pos: from, button: eframe::egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    h.event(Event::PointerMoved(to));
+    h.step();
+    h.event(Event::PointerButton { pos: to, button: eframe::egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    steps(&mut h, 3);
+    let [a, b] = h.state().panel_rects;
+    assert!(a.width() > b.width() + 300.0, "left panel grew: {} / {}", a.width(), b.width());
+    assert!(h.state().cfg.split > 0.6);
+    if let Ok(out) = std::env::var("MIERY_NARROW_SHOT") {
+        h.render().unwrap().save(format!("{out}/divider.png")).unwrap();
+    }
+}
+
+#[test]
+fn overwriting_goes_through_a_neighbour_file() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    fs::write(l.path().join("x.txt"), "neu und laenger").unwrap();
+    fs::write(r.path().join("x.txt"), "alt").unwrap();
+    crate::ops::VERIFY.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut h = harness();
+    setup(&mut h, l.path(), r.path());
+    select(&mut h, "x.txt");
+    panel_key(&mut h, Key::F5, Modifiers::NONE);
+    dialog_input(&mut h, None);
+    answer_overwrite(&mut h, "Überschreiben");
+    wait_for_job(&mut h);
+    assert_no_job_errors(&h, "overwrite");
+    assert_eq!(fs::read_to_string(r.path().join("x.txt")).unwrap(), "neu und laenger");
+    let left_over: Vec<_> = fs::read_dir(r.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(left_over.len(), 1, "no part file may stay behind: {left_over:?}");
+    assert!(crate::ops::part_path(&r.path().join("x.txt")).to_string_lossy().ends_with(".x.txt.miery-part"));
+}
+
+#[test]
+fn paused_job_waits_and_goes_on() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    for i in 0..40 {
+        fs::write(l.path().join(format!("f{i}.bin")), vec![7u8; 4096]).unwrap();
+    }
+    let ctx = eframe::egui::Context::default();
+    let sources: Vec<_> = (0..40).map(|i| l.path().join(format!("f{i}.bin"))).collect();
+    let paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    // Paused before it starts: nothing may be copied until it is resumed.
+    let job = crate::ops::Job::start_paused(crate::ops::JobKind::Copy, sources, r.path().to_path_buf(), ctx, paused.clone());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(fs::read_dir(r.path()).unwrap().count(), 0, "a paused job must not copy");
+    assert!(!job.progress.lock().unwrap().finished);
+    paused.store(false, std::sync::atomic::Ordering::Relaxed);
+    let start = Instant::now();
+    while !job.progress.lock().unwrap().finished {
+        assert!(start.elapsed() < Duration::from_secs(10), "resumed job did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(fs::read_dir(r.path()).unwrap().count(), 40);
+}
+
+#[test]
+fn long_names_thumbnails_and_single_panel() {
+    let (l, r) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    for (i, color) in [[220u8, 60, 60], [60, 160, 220], [80, 200, 90]].iter().enumerate() {
+        let img = image::RgbImage::from_fn(320, 200, |x, y| image::Rgb(if (x / 40 + y / 40) % 2 == 0 { *color } else { [240, 240, 240] }));
+        img.save(l.path().join(format!("Sommerurlaub an der Ostsee 2026 – Strandspaziergang Teil {}.png", i + 1))).unwrap();
+    }
+    fs::write(l.path().join("Notizen zur Steuererklärung für das Jahr 2025 (Entwurf 3).txt"), "x").unwrap();
+    fs::create_dir(l.path().join("Ein Ordner mit einem ziemlich langen Namen zum Testen")).unwrap();
+    let shot = |h: &mut Harness<'_, MieryApp>, name: &str| {
+        if let Ok(out) = std::env::var("MIERY_NARROW_SHOT") {
+            h.render().unwrap().save(format!("{out}/{name}.png")).unwrap();
+        }
+    };
+    let mut h = Harness::builder().with_size([900.0, 520.0]).build_eframe(|cc| MieryApp::new(cc));
+    setup(&mut h, l.path(), r.path());
+    steps(&mut h, 3);
+    // Shortened in the middle: the end of the name ("Teil 1") stays visible.
+    assert!(h.query_all_by_label_contains("…").count() >= 3, "long names are shortened");
+    assert!(h.query_all_by_label_contains("Teil 1").count() >= 1, "the end of the name stays readable");
+    shot(&mut h, "names-middle");
+
+    h.state_mut().cfg.ext_column = false;
+    h.state_mut().cfg.thumbnails = true;
+    // Previews are decoded in the background.
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(20));
+        h.step();
+    }
+    assert_eq!(h.query_all_by_label("Erw.").count(), 0, "no extension column");
+    assert!(h.query_all_by_label_contains(".png").count() >= 3, "extension is part of the name");
+    shot(&mut h, "thumbnails");
+
+    h.state_mut().cfg.thumbnails = false;
+    h.state_mut().cfg.single_panel = true;
+    steps(&mut h, 3);
+    let [a, b] = h.state().panel_rects;
+    assert!(a.width() > 800.0 && b.width() <= 0.0, "only the active panel is shown: {a:?} {b:?}");
+    panel_key(&mut h, Key::Tab, Modifiers::NONE);
+    let [a, b] = h.state().panel_rects;
+    assert!(b.width() > 800.0 && a.width() <= 0.0, "Tab shows the other panel");
+    shot(&mut h, "single");
+
+    // A tiny window switches to one panel by itself; the F keys get short labels.
+    let mut h = Harness::builder().with_size([500.0, 400.0]).build_eframe(|cc| MieryApp::new(cc));
+    setup(&mut h, l.path(), r.path());
+    steps(&mut h, 3);
+    let [a, b] = h.state().panel_rects;
+    assert!(a.width() > 400.0 && b.width() <= 0.0);
+    assert_eq!(h.query_all_by_label("F5").count(), 1, "short F key labels");
+    shot(&mut h, "tiny");
 }
