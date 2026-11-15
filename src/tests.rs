@@ -131,7 +131,7 @@ fn f5_copies_marked_files_and_dirs() {
     panel_key(&mut h, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
     assert_eq!(h.state().left.tab().marked.len(), 2);
     let dest = r.path().to_string_lossy().into_owned();
-    assert!(crate::oplog::records().iter().any(|rec| rec.ok && rec.dest.trim_end_matches(std::path::MAIN_SEPARATOR) == dest), "copy must be logged: {:?}", crate::oplog::records());
+    assert!(crate::oplog::records().iter().any(|rec| rec.ok && rec.dest.trim_end_matches(['/', '\\']) == dest), "copy must be logged: {:?}", crate::oplog::records());
 }
 
 #[test]
